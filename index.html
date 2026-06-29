@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DRIFT // Vector Survival</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div id="gameWrap">
+  <canvas id="bgCanvas"></canvas>
+  <canvas id="mainCanvas"></canvas>
+
+  <div id="hud">
+    <div id="center-mark"></div>
+
+    <div id="wave-banner">SECTOR ESCALATING</div>
+
+    <div class="hud-corner" id="hud-topleft">
+      <div class="label">HULL INTEGRITY</div>
+      <div id="lives"></div>
+    </div>
+
+    <div class="hud-corner" id="hud-topright">
+      <div class="label">SCORE</div>
+      <div class="value" id="score-value">0</div>
+      <div class="label" style="margin-top:6px;">NEXT UPGRADE</div>
+      <div class="value" style="font-size:14px;" id="next-upgrade-value">1500</div>
+    </div>
+
+    <div id="weapon-readout">
+      <div class="wtitle">ARMAMENT</div>
+      <div id="weapon-name">PULSE CANNON</div>
+      <div id="weapon-mods"></div>
+    </div>
+
+    <div id="shield-bar-wrap">
+      <div id="shield-label">SHIELD</div>
+      <div id="shield-track"><div id="shield-fill"></div></div>
+    </div>
+
+    <div id="ability-readout" class="hidden">
+      <div id="ability-label">SPACE</div>
+      <div id="ability-track"><div id="ability-fill"></div></div>
+    </div>
+
+    <div id="pause-hint" class="hidden">ESC TO PAUSE</div>
+  </div>
+
+  <!-- MAIN MENU -->
+  <div class="overlay" id="start-screen">
+    <div class="title-main">DRIFT</div>
+    <div class="title-sub">VECTOR SURVIVAL PROTOCOL</div>
+    <div class="briefing">
+      You are fixed at the center of the void. The field moves around you.<br>
+      <span class="key">W</span><span class="key">A</span><span class="key">S</span><span class="key">D</span> to drift &nbsp;&middot;&nbsp;
+      mouse to aim &nbsp;&middot;&nbsp;
+      <span class="key">CLICK</span> to fire &nbsp;&middot;&nbsp;
+      <span class="key">SPACE</span> for abilities<br><br>
+      Survive the asteroid field. Every 1500 points, choose an upgrade.<br>
+      Three hits, and the hull gives out.
+    </div>
+    <div class="menu-btn-row">
+      <button class="btn" id="start-btn">BEGIN DRIFT</button>
+      <button class="btn btn-secondary" id="enemy-guide-btn">ENEMY GUIDE</button>
+      <button class="btn btn-secondary" id="statmod-guide-btn">STATS &amp; MODS</button>
+      <button class="btn btn-secondary" id="build-guide-btn">BUILD GUIDE</button>
+    </div>
+  </div>
+
+  <!-- ENEMY GUIDE SCREEN -->
+  <div class="overlay hidden guide-overlay" id="enemy-guide-screen">
+    <button class="back-btn" id="enemy-guide-back">&larr; BACK</button>
+    <div class="guide-heading">ENEMY GUIDE</div>
+    <div class="guide-sub">KNOW WHAT'S COMING FOR YOU</div>
+    <div class="guide-scroll">
+      <div class="guide-grid" id="enemy-guide-grid"></div>
+      <div class="guide-section-heading">RANDOM EVENTS</div>
+      <div class="guide-grid" id="event-guide-grid"></div>
+    </div>
+  </div>
+
+  <!-- STATS & MODIFICATIONS GUIDE SCREEN -->
+  <div class="overlay hidden guide-overlay" id="statmod-guide-screen">
+    <button class="back-btn" id="statmod-guide-back">&larr; BACK</button>
+    <div class="guide-heading">STATS &amp; MODIFICATIONS</div>
+    <div class="guide-sub">UPGRADES OFFERED EVERY SCORE MILESTONE</div>
+    <div class="guide-scroll">
+      <div class="statmod-intro">
+        Every milestone, you're offered 3 of these to choose from. <strong>Basics</strong> are simple, universal stat boosts — reliable, no strings attached. <strong>Specializations</strong> are grouped by focus; lean into one and they start compounding into a real build. Each card also rolls a strength tier independently, shown below for every option.
+      </div>
+      <div id="statmod-sections"></div>
+    </div>
+  </div>
+
+  <!-- BUILD GUIDE SCREEN (abilities) -->
+  <div class="overlay hidden guide-overlay" id="build-guide-screen">
+    <button class="back-btn" id="build-guide-back">&larr; BACK</button>
+    <div class="guide-heading">BUILD GUIDE</div>
+    <div class="guide-sub">ABILITIES &mdash; ACTIVATED WITH SPACE</div>
+    <div class="guide-scroll">
+      <div class="guide-grid" id="build-guide-grid"></div>
+    </div>
+  </div>
+
+  <!-- PAUSE OVERLAY -->
+  <div class="overlay hidden pause-overlay" id="pause-screen">
+    <div class="paused-title">PAUSED</div>
+    <div class="pause-panels">
+      <div class="pause-panel">
+        <div class="pause-panel-heading">SHIP STATUS</div>
+        <div class="pause-stat-grid" id="pause-stats-left"></div>
+      </div>
+      <div class="pause-panel">
+        <div class="pause-panel-heading">ENEMIES DESTROYED</div>
+        <div class="pause-kill-log" id="pause-kill-log"></div>
+        <div class="pause-kill-total" id="pause-kill-total"></div>
+      </div>
+    </div>
+    <div class="pause-btn-row">
+      <button class="btn" id="resume-btn">RESUME</button>
+      <button class="btn btn-secondary" id="quit-to-menu-btn">QUIT TO MAIN MENU</button>
+    </div>
+  </div>
+
+  <!-- DEATH SCREEN -->
+  <div class="overlay hidden death-overlay" id="death-screen">
+    <div class="death-title">HULL BREACH</div>
+    <div class="pause-panels">
+      <div class="pause-panel">
+        <div class="pause-panel-heading">FINAL RUN STATS</div>
+        <div class="pause-stat-grid" id="death-stats-left"></div>
+      </div>
+      <div class="pause-panel">
+        <div class="pause-panel-heading">ENEMIES DESTROYED</div>
+        <div class="pause-kill-log" id="death-kill-log"></div>
+        <div class="pause-kill-total" id="death-kill-total"></div>
+      </div>
+    </div>
+    <div class="pause-btn-row">
+      <button class="btn" id="restart-btn">DRIFT AGAIN</button>
+      <button class="btn btn-secondary" id="death-menu-btn">RETURN TO MAIN MENU</button>
+    </div>
+  </div>
+
+  <!-- UPGRADE SCREEN -->
+  <div class="overlay hidden" id="upgrade-screen">
+    <div class="upgrade-heading">SIGNAL DETECTED</div>
+    <div class="upgrade-sub">CHOOSE ONE ENHANCEMENT</div>
+    <div class="card-row" id="card-row"></div>
+  </div>
+</div>
+
+<script src="game.js"></script>
+</body>
+</html>
