@@ -185,6 +185,19 @@ const ownedAbilities = {};       // track which ability ids the player has unloc
 let equippedAbilityId = null;    // which ability spacebar currently activates
 let abilityCooldownRemaining = 0; // ms remaining before the equipped ability can fire again
 
+/* ============================================================
+   FAMILY COMMITMENT SYSTEM — at the start of a run, any family's
+   cards can appear in the offer pool. The moment the player picks
+   a card from a given family, that family becomes "locked in" for
+   the rest of the run (max 2 locked families). Once 2 are locked,
+   every OTHER family stops appearing entirely — only those 2
+   families, Basics (non-family), and Jokers remain in the pool.
+   This is what lets a run actually specialize instead of spreading
+   one pick across every family at once.
+============================================================ */
+const MAX_LOCKED_FAMILIES = 2;
+let lockedFamilies = []; // family keys the player has committed to this run, in the order they were locked
+
 /* run statistics — tracked for pause overlay and death screen, does not affect gameplay */
 const runStats = {
   killsByType: {}, // e.g. { ast_large: 4, drifter1: 9, hunter: 2, boss: 1, ... }
@@ -312,7 +325,7 @@ function splitAsteroid(a){
    - turret: stays at range, fires aimed bursts
    - boss: large, high hp, appears every few waves, multi-attack
 ============================================================ */
-const MAX_ENEMIES = 60;
+const MAX_ENEMIES = 50;
 
 function spawnEnemy(type, forcedX, forcedY){
   if(enemies.length >= MAX_ENEMIES){
@@ -378,14 +391,14 @@ function spawnEnemy(type, forcedX, forcedY){
   } else if(type === 'tank2'){
     Object.assign(base, {
       type: 'tank', tier: 2, radius: 29, hp: 17, maxHp: 17,
-      speed: rand(0.45,0.65),
+      speed: rand(0.7,0.9),
       color: 'tank2',
       scoreValue: 260
     });
   } else if(type === 'tank3'){
     Object.assign(base, {
       type: 'tank', tier: 3, radius: 32, hp: 22, maxHp: 22,
-      speed: rand(0.35,0.55),
+      speed: rand(0.85,1.05),
       color: 'tank3',
       scoreValue: 300
     });
@@ -428,6 +441,17 @@ function spawnEnemy(type, forcedX, forcedY){
       color: 'green',
       scoreValue: 1400
     });
+  } else if(type === 'mine'){
+    Object.assign(base, {
+      type, radius: 14, hp: 3, maxHp: 3,
+      speed: 0, // stationary until triggered
+      mineState: 'idle',       // 'idle' | 'triggered'
+      mineDetectRadius: 200,
+      mineChaseSpeed: rand(2.8, 3.4), // same pace as a Drifter Mk.III, set once at spawn
+      mineFuse: 7000,          // ms after triggering before it detonates on its own
+      color: 'mine',
+      scoreValue: 130
+    });
   }
   enemies.push(base);
 }
@@ -442,12 +466,70 @@ let swarmActive = false;
 let swarmTimeRemaining = 0;
 let swarmSpawnTimer = 0;
 
+/* ============================================================
+   SPAWN REGULATION — every so often, one enemy type becomes the
+   "focus" and gets spawned noticeably more often than the others
+   for a while, then the focus rotates to something else (or to
+   none at all). This is deliberately NOT a takeover wave like the
+   Drifter Swarm event — every other enemy type keeps spawning at
+   its normal rate underneath, the focus just tilts the mix so a
+   stretch of the fight reads as "mostly tanks" or "mostly turrets"
+   without ever becoming "only tanks".
+============================================================ */
+let spawnFocusType = null;       // null = no active focus, otherwise an enemy type string
+let spawnFocusTimer = 0;         // ms remaining until the focus rotates
+
+const SPAWN_FOCUS_CANDIDATES = ['drifter', 'hunter', 'turret', 'tank', 'tank2', 'tank3'];
+
+function rollNewSpawnFocus(){
+  // roughly 1 in 3 rotations leaves the field unfocused (pure normal mix)
+  if(Math.random() < 0.33){
+    spawnFocusType = null;
+  } else {
+    spawnFocusType = SPAWN_FOCUS_CANDIDATES[Math.floor(Math.random() * SPAWN_FOCUS_CANDIDATES.length)];
+  }
+  spawnFocusTimer = rand(9000, 16000);
+}
+
+/* ============================================================
+   HAZARD REGULATION — the same idea as the enemy spawn focus
+   above, but for the passive field hazards (asteroid sizes, and
+   mines). Rotates twice as often (half the duration) since
+   hazards turn over faster than enemy encounters do. Mines are
+   NOT part of the wave director's difficulty-scaled enemy mix —
+   they spawn the same passive way asteroids do, rare and
+   scattered, regardless of how difficult the fight has gotten.
+============================================================ */
+let hazardFocusType = null;      // null, 'large', 'medium', 'small', or 'mine'
+let hazardFocusTimer = 0;
+
+const HAZARD_FOCUS_CANDIDATES = ['large', 'medium', 'small', 'mine'];
+
+function rollNewHazardFocus(){
+  if(Math.random() < 0.33){
+    hazardFocusType = null;
+  } else {
+    hazardFocusType = HAZARD_FOCUS_CANDIDATES[Math.floor(Math.random() * HAZARD_FOCUS_CANDIDATES.length)];
+  }
+  hazardFocusTimer = rand(4500, 8000); // half the enemy focus window
+}
+
 function difficultyFactor(){
   // scales from 1.0 upward based on elapsed time and score
   return 1 + (elapsedTime/60)*0.55 + (score/4000)*0.4;
 }
 
 function updateWaveDirector(dt){
+  // --- rotate the spawn focus periodically ---
+  spawnFocusTimer -= dt;
+  if(spawnFocusTimer <= 0){
+    rollNewSpawnFocus();
+  }
+  hazardFocusTimer -= dt;
+  if(hazardFocusTimer <= 0){
+    rollNewHazardFocus();
+  }
+
   // --- normal spawning always runs, swarm or not ---
   spawnTimer += dt;
   const diff = difficultyFactor();
@@ -458,26 +540,59 @@ function updateWaveDirector(dt){
 
     const asteroidChance = Math.max(0.35, 0.7 - diff*0.05);
     if(Math.random() < asteroidChance){
-      spawnAsteroid();
-    } else {
-      const roll = Math.random();
-      if(diff < 1.6){
-        spawnEnemy('drifter');
-      } else if(diff < 2.6){
-        spawnEnemy(roll < 0.65 ? 'drifter' : 'hunter');
-      } else if(diff < 3.4){
-        if(roll < 0.45) spawnEnemy('drifter');
-        else if(roll < 0.8) spawnEnemy('hunter');
-        else spawnEnemy('turret');
-      } else {
-        // tanks join the rotation once things are already getting dangerous
-        if(roll < 0.35) spawnEnemy('drifter');
-        else if(roll < 0.6) spawnEnemy('hunter');
-        else if(roll < 0.8) spawnEnemy('turret');
-        else if(roll < 0.92) spawnEnemy('tank');
-        else if(roll < 0.97) spawnEnemy('tank2');
-        else spawnEnemy('tank3');
+      // hazard mix: asteroid sizes plus a rare chance of a mine, both
+      // regulated by the same focus-rotation idea as the enemy mix —
+      // mines stay rare on their own, but the focus can occasionally
+      // tilt a stretch of the field toward "more mines than usual"
+      // without ever taking over completely.
+      let hazardWeights = { large: 0.35, medium: 0.35, small: 0.3, mine: 0.04 };
+      if(hazardFocusType && hazardWeights[hazardFocusType] !== undefined){
+        hazardWeights[hazardFocusType] *= 3;
       }
+      const hazardTypes = Object.keys(hazardWeights);
+      const hazardTotal = hazardTypes.reduce((s,t)=>s+hazardWeights[t], 0);
+      let hazardRoll = Math.random() * hazardTotal;
+      let chosenHazard = hazardTypes[hazardTypes.length-1];
+      for(const t of hazardTypes){
+        hazardRoll -= hazardWeights[t];
+        if(hazardRoll <= 0){ chosenHazard = t; break; }
+      }
+      if(chosenHazard === 'mine'){
+        spawnEnemy('mine');
+      } else {
+        spawnAsteroid(chosenHazard);
+      }
+    } else {
+      // base weight per type at this difficulty tier — same enemy availability
+      // as before, just expressed as weights instead of nested roll bands so a
+      // focus type can be boosted on top without restructuring the tiers.
+      let weights;
+      if(diff < 1.6){
+        weights = { drifter: 1 };
+      } else if(diff < 2.6){
+        weights = { drifter: 0.65, hunter: 0.35 };
+      } else if(diff < 3.4){
+        weights = { drifter: 0.45, hunter: 0.35, turret: 0.2 };
+      } else {
+        weights = { drifter: 0.35, hunter: 0.25, turret: 0.2, tank: 0.12, tank2: 0.05, tank3: 0.03 };
+      }
+
+      // apply the spawn focus: triple the favored type's weight if it's
+      // actually eligible at this difficulty tier, so a focus on Tank Mk.III
+      // does nothing early on when tanks wouldn't appear yet anyway.
+      if(spawnFocusType && weights[spawnFocusType] !== undefined){
+        weights[spawnFocusType] *= 3;
+      }
+
+      const types = Object.keys(weights);
+      const totalWeight = types.reduce((s,t)=>s+weights[t], 0);
+      let roll = Math.random() * totalWeight;
+      let chosenType = types[types.length-1];
+      for(const t of types){
+        roll -= weights[t];
+        if(roll <= 0){ chosenType = t; break; }
+      }
+      spawnEnemy(chosenType);
     }
   }
 
@@ -781,6 +896,70 @@ function detonateMissile(wx, wy){
   tryChainReaction(wx, wy);
 }
 
+/* ============================================================
+   MINE — a dormant hazard scattered in the field. Does nothing
+   until the player drifts within its detection radius, at which
+   point it visibly arms (red indicator dots) and chases at a
+   fixed speed (same pace as a Drifter Mk.III) until it either
+   catches the player and detonates, runs out its 7-second fuse,
+   or gets shot down first. Detonation costs the player 1 life if
+   they're caught in the blast, and also splashes nearby asteroids
+   and enemies the same way Fragment Warheads/Missile do.
+============================================================ */
+const MINE_CONFIG = {
+  blastRadius: 70,
+  collateralDamage: 8 // damage dealt to enemies/asteroids caught in the blast (not the player, who loses a flat 1 life)
+};
+
+function detonateMine(wx, wy){
+  const radius = MINE_CONFIG.blastRadius;
+
+  // does the blast actually reach the player?
+  const distToPlayer = Math.sqrt(dist2(wx, wy, worldShiftX, worldShiftY));
+  if(distToPlayer < radius + player.radius){
+    damagePlayer(1);
+  }
+
+  // collateral splash to nearby enemies/asteroids, same pattern as other explosive hazards
+  const nearbyEnemies = enemyGrid ? new Set(gridQuery(enemyGrid, wx, wy, radius)) : null;
+  for(let ei=enemies.length-1; ei>=0; ei--){
+    const e = enemies[ei];
+    if(e.type === 'mine') continue; // a detonating mine shouldn't chain into other mines
+    if(nearbyEnemies && !nearbyEnemies.has(e)) continue;
+    if(dist2(e.x,e.y,wx,wy) < radius*radius){
+      e.hp -= MINE_CONFIG.collateralDamage;
+      e.hitFlash = 150;
+      if(e.hp <= 0){
+        const screenX = e.x - worldShiftX + CX;
+        const screenY = e.y - worldShiftY + CY;
+        killEnemy(e, ei, screenX, screenY);
+      }
+    }
+  }
+  const nearbyAsteroids = asteroidGrid ? new Set(gridQuery(asteroidGrid, wx, wy, radius)) : null;
+  for(let ai=asteroids.length-1; ai>=0; ai--){
+    const a = asteroids[ai];
+    if(nearbyAsteroids && !nearbyAsteroids.has(a)) continue;
+    if(dist2(a.x,a.y,wx,wy) < radius*radius){
+      a.hp -= MINE_CONFIG.collateralDamage;
+      a.hitFlash = 150;
+      if(a.hp <= 0){
+        const screenX = a.x - worldShiftX + CX;
+        const screenY = a.y - worldShiftY + CY;
+        addScore(a.size === 'large' ? 60 : a.size === 'medium' ? 35 : 20);
+        spawnExplosion(screenX, screenY, 'grey', 10, a.size==='large');
+        trackKill(a.size==='large' ? 'ast_large' : a.size==='medium' ? 'ast_medium' : 'ast_small');
+        splitAsteroid(a);
+        asteroids.splice(ai,1);
+      }
+    }
+  }
+
+  const screenX = wx - worldShiftX + CX;
+  const screenY = wy - worldShiftY + CY;
+  spawnExplosion(screenX, screenY, 'magenta', 24, true);
+}
+
 function updateMissiles(dt){
   for(let i=missiles.length-1;i>=0;i--){
     const m = missiles[i];
@@ -995,8 +1174,12 @@ function buildShipStatRows(){
   const accuracy = runStats.shotsFired > 0
     ? Math.round((runStats.totalKills / runStats.shotsFired) * 100)
     : 0;
+  const specializationText = lockedFamilies.length === 0
+    ? 'none yet'
+    : lockedFamilies.map(f => FAMILY_DEFS[f] ? FAMILY_DEFS[f].label : f.toUpperCase()).join(' + ');
   return [
     ['Score', Math.floor(score).toString(), true],
+    ['Specialization', specializationText, true],
     ['Time survived', formatTime(elapsedTime), false],
     ['Lives', `${player.lives} / ${player.maxLives}`, false],
     ['Shield charges', `${player.shieldCharge} / ${player.shieldMax}`, false],
@@ -1673,12 +1856,66 @@ function weightedPickDistinct(pool, count){
   return chosen;
 }
 
+// returns true if this card is allowed to appear in the offer pool right now,
+// based on the family-commitment rules (Basics and Jokers are always eligible;
+// family cards are only eligible if their family is already locked in, or the
+// player still has a locked-family slot open).
+function isFamilyEligible(card){
+  if(card.cardType !== 'family') return true; // non-family, ability, joker — always eligible
+  if(lockedFamilies.includes(card.family)) return true;
+  return lockedFamilies.length < MAX_LOCKED_FAMILIES;
+}
+
 function pickUpgradeOptions(){
-  const combinedPool = [...UPGRADE_POOL, ...ABILITY_POOL, ...JOKER_POOL];
-  const typesChosen = weightedPickDistinct(combinedPool, 3);
+  const combinedPool = [...UPGRADE_POOL, ...ABILITY_POOL, ...JOKER_POOL]
+    .filter(card => card.available() && isFamilyEligible(card));
+
+  // First pick: a normal weighted draw across everything eligible right now.
+  const chosen = [];
+  const remainingPool = combinedPool.slice();
+
+  function weightedPickOne(pool){
+    const totalWeight = pool.reduce((s,u)=>s+u.weight, 0);
+    let roll = Math.random() * totalWeight;
+    for(let i=0;i<pool.length;i++){
+      roll -= pool[i].weight;
+      if(roll <= 0) return i;
+    }
+    return pool.length - 1;
+  }
+
+  while(chosen.length < 3 && remainingPool.length > 0){
+    // Variety nudge: if the player hasn't locked their 2nd family yet, and this
+    // draw has already picked a family card, halve the weight of any further
+    // cards from that same family for the rest of this draw — doesn't block
+    // them, just makes the game lean toward offering a second family option
+    // instead of stacking the same one three times in a row.
+    const familiesAlreadyInThisDraw = chosen
+      .filter(c => c.cardType === 'family')
+      .map(c => c.family);
+
+    let pickPool = remainingPool;
+    if(lockedFamilies.length < MAX_LOCKED_FAMILIES && familiesAlreadyInThisDraw.length > 0){
+      pickPool = remainingPool.map(card => {
+        if(card.cardType === 'family' && familiesAlreadyInThisDraw.includes(card.family)){
+          return { card, weight: card.weight * 0.5 };
+        }
+        return { card, weight: card.weight };
+      });
+      const idx = weightedPickOne(pickPool.map(p => ({ weight: p.weight })));
+      const picked = pickPool[idx].card;
+      chosen.push(picked);
+      remainingPool.splice(remainingPool.indexOf(picked), 1);
+    } else {
+      const idx = weightedPickOne(remainingPool);
+      chosen.push(remainingPool[idx]);
+      remainingPool.splice(idx, 1);
+    }
+  }
+
   // stat/mod cards independently roll a strength tier (layer 2);
   // ability cards and joker cards have no tier
-  return typesChosen.map(upgrade => ({
+  return chosen.map(upgrade => ({
     upgrade,
     tier: (upgrade.category === 'ability' || upgrade.cardType === 'joker') ? null : rollTier()
   }));
@@ -1802,6 +2039,11 @@ function showUpgradeScreen(){
         upgrade.apply(tier);
         ownedUpgrades[upgrade.id] = (ownedUpgrades[upgrade.id]||0)+1;
       }
+      if(upgrade.cardType === 'family' && !lockedFamilies.includes(upgrade.family) && lockedFamilies.length < MAX_LOCKED_FAMILIES){
+        lockedFamilies.push(upgrade.family);
+        const familyLabel = FAMILY_DEFS[upgrade.family] ? FAMILY_DEFS[upgrade.family].label : upgrade.family.toUpperCase();
+        flashWaveBanner(`${familyLabel} SPECIALIZATION LOCKED IN`);
+      }
       runStats.upgradesChosen++;
       updateWeaponNameDisplay();
       document.getElementById('upgrade-screen').classList.add('hidden');
@@ -1873,12 +2115,23 @@ function triggerDeath(){
   document.getElementById('death-screen').classList.remove('hidden');
 }
 
+// Staged-linear score threshold growth, modeled on how Vampire Survivors
+// paces its level-up curve: a flat amount is added each time, and that
+// amount steps up at a few points rather than compounding forever. This
+// keeps the late-game threshold from spiraling out of reach the way a
+// constant multiplier (the old 1.3x-per-upgrade system) eventually did.
+function nextThresholdStep(upgradesSoFar){
+  if(upgradesSoFar < 5) return 750;   // upgrades 1-5
+  if(upgradesSoFar < 10) return 1000; // upgrades 6-10
+  return 1300;                         // upgrade 11 onward
+}
+
 function addScore(amount){
   const bonusAmount = amount * (1 + player.scoreBonusPct/100);
   score += bonusAmount;
   document.getElementById('score-value').textContent = Math.floor(score);
   if(score >= nextUpgradeAt){
-    nextUpgradeAt = Math.round(nextUpgradeAt * 1.3);
+    nextUpgradeAt += nextThresholdStep(runStats.upgradesChosen);
     document.getElementById('next-upgrade-value').textContent = Math.floor(nextUpgradeAt);
     showUpgradeScreen();
   }
@@ -2059,10 +2312,30 @@ function update(dt){
           e.lastFire = now;
         }
       }
+    } else if(e.type === 'mine'){
+      if(e.mineState === 'idle'){
+        // dormant — only wakes up once the player drifts inside its detection radius
+        if(d < e.mineDetectRadius){
+          e.mineState = 'triggered';
+          e.speed = e.mineChaseSpeed;
+          e.mineFuseRemaining = e.mineFuse;
+        }
+      } else if(e.mineState === 'triggered'){
+        e.x += Math.cos(toPlayerAngle)*e.speed;
+        e.y += Math.sin(toPlayerAngle)*e.speed;
+        e.angle = toPlayerAngle;
+        e.mineFuseRemaining -= dt;
+        if(e.mineFuseRemaining <= 0){
+          detonateMine(e.x, e.y);
+          enemies.splice(i,1);
+          continue;
+        }
+      }
     }
 
-    // cull far away (except boss/marksman, which persist)
-    if(e.type !== 'boss' && e.type !== 'marksman' && dist2(e.x,e.y,worldShiftX,worldShiftY) > Math.pow(Math.max(W,H)*1.7,2)){
+    // cull far away (except boss/marksman, which persist, and a mine actively chasing the player)
+    const isChasingMine = e.type === 'mine' && e.mineState === 'triggered';
+    if(e.type !== 'boss' && e.type !== 'marksman' && !isChasingMine && dist2(e.x,e.y,worldShiftX,worldShiftY) > Math.pow(Math.max(W,H)*1.7,2)){
       enemies.splice(i,1); continue;
     }
 
@@ -2070,7 +2343,13 @@ function update(dt){
     const screenX = e.x - worldShiftX + CX;
     const screenY = e.y - worldShiftY + CY;
     if(circleHit(screenX,screenY,e.radius, CX,CY,player.radius)){
-      damagePlayer(e.type==='boss' ? 1 : 1);
+      if(e.type === 'mine'){
+        detonateMine(e.x, e.y);
+        enemies.splice(i,1);
+        continue;
+      }
+      const collisionDamage = e.type === 'tank' ? (e.tier || 1) : 1;
+      damagePlayer(collisionDamage);
       e.hp -= 2;
       e.hitFlash = 150;
       if(e.hp <= 0){
@@ -2331,6 +2610,20 @@ function updateHUD(){
     document.getElementById('ability-fill').classList.toggle('on-cooldown', !ready);
     document.getElementById('ability-label').textContent = ready ? `SPACE — ${ability.name}` : `SPACE — ${(abilityCooldownRemaining/1000).toFixed(1)}s`;
   }
+
+  const specReminder = document.getElementById('specialization-reminder');
+  if(lockedFamilies.length >= MAX_LOCKED_FAMILIES){
+    // both specialization slots are filled — nothing left to remind the player about
+    specReminder.classList.add('hidden');
+  } else {
+    specReminder.classList.remove('hidden');
+    const lockedLabels = lockedFamilies.map(f => FAMILY_DEFS[f] ? FAMILY_DEFS[f].label : f.toUpperCase());
+    if(lockedFamilies.length === 0){
+      specReminder.textContent = 'CHOOSE 2 SPECIALIZATIONS';
+    } else {
+      specReminder.textContent = `${lockedLabels.join(' LOCKED')} LOCKED — CHOOSE 1 MORE`;
+    }
+  }
 }
 
 /* ============================================================
@@ -2438,7 +2731,8 @@ const enemyColorMap = {
   magenta: '#ff3d6e', purple: '#b88aff', amber: '#ffb347',
   drifter2: '#ff8c3d', drifter3: '#fff23d',
   tank1: '#7d9fc9', tank2: '#5f7ea8', tank3: '#3f5d87',
-  green: '#7dff8c'
+  green: '#7dff8c',
+  mine: '#8a8f9a'
 };
 
 function drawEnemies(){
@@ -2571,6 +2865,46 @@ function drawEnemies(){
       ctx.strokeRect(0,0,barW2,5);
       ctx.fillStyle = '#7dff8c';
       ctx.fillRect(0,0, barW2*(e.hp/e.maxHp), 5);
+      ctx.restore();
+      continue;
+    } else if(e.type === 'mine'){
+      const armed = e.mineState === 'triggered';
+      const bodyColor = armed ? '#ff3d6e' : enemyColorMap.mine;
+      ctx.strokeStyle = e.hitFlash > 0 ? '#ffffff' : bodyColor;
+      ctx.shadowColor = bodyColor;
+      ctx.shadowBlur = armed ? 14 : 5;
+
+      // round mine body with small radial spikes
+      ctx.beginPath();
+      ctx.arc(0,0,e.radius*0.65,0,Math.PI*2);
+      ctx.stroke();
+      const spikeCount = 8;
+      for(let s=0; s<spikeCount; s++){
+        const a2 = (s/spikeCount)*Math.PI*2;
+        const innerX = Math.cos(a2)*e.radius*0.65, innerY = Math.sin(a2)*e.radius*0.65;
+        const outerX = Math.cos(a2)*e.radius*1.05, outerY = Math.sin(a2)*e.radius*1.05;
+        ctx.beginPath();
+        ctx.moveTo(innerX, innerY);
+        ctx.lineTo(outerX, outerY);
+        ctx.stroke();
+      }
+
+      // armed indicator: small pulsing red dots ringing the mine, the player's
+      // visual cue that this one has woken up and is actively chasing them
+      if(armed){
+        const pulse = 0.5 + 0.5*Math.sin(performance.now()/120);
+        ctx.fillStyle = `rgba(255,61,110,${0.6 + pulse*0.4})`;
+        ctx.shadowBlur = 0;
+        const dotCount = 6;
+        for(let dn=0; dn<dotCount; dn++){
+          const a2 = (dn/dotCount)*Math.PI*2 + performance.now()/600;
+          const dx = Math.cos(a2)*e.radius*0.85, dy = Math.sin(a2)*e.radius*0.85;
+          ctx.beginPath();
+          ctx.arc(dx, dy, 1.8, 0, Math.PI*2);
+          ctx.fill();
+        }
+      }
+
       ctx.restore();
       continue;
     }
@@ -2719,6 +3053,10 @@ function resetGame(){
   swarmActive = false;
   swarmTimeRemaining = 0;
   swarmSpawnTimer = 0;
+  spawnFocusType = null;
+  spawnFocusTimer = 0;
+  hazardFocusType = null;
+  hazardFocusTimer = 0;
   worldShiftX = 0; worldShiftY = 0;
   player.angle = 0; player.vx = 0; player.vy = 0;
   player.lives = 3; player.maxLives = 5;
@@ -2739,6 +3077,7 @@ function resetGame(){
   equippedAbilityId = null;
   abilityCooldownRemaining = 0;
   for(const key in ownedAbilities) delete ownedAbilities[key];
+  lockedFamilies = [];
   weapon.chainReactor = false; weapon.chainChance = 0; weapon.chainRadius = 0;
   weapon.pierceDamageRetain = 0.7;
   pickupTexts = [];
@@ -2835,18 +3174,23 @@ const ENEMY_GUIDE = [
   },
   {
     id: 'tank1', name: 'TANK', score: '220 PTS',
-    desc: 'A heavily armored hull that lumbers straight at you. Slower than a drifter, but absorbs far more damage — easy to dodge, costly to ignore.',
+    desc: 'A heavily armored hull that lumbers straight at you. Slower than a drifter, but absorbs far more damage — easy to dodge, costly to ignore. A collision costs 1 life.',
     tag: 'HOSTILE', iconKind: 'tank', iconColor: '#7d9fc9'
   },
   {
     id: 'tank2', name: 'TANK MK.II', score: '260 PTS',
-    desc: 'A bigger, even slower tank with a noticeably tougher hull than the original.',
+    desc: 'A bigger tank with a noticeably tougher hull and a bit more speed than the original — still slow, but don\u2019t take it for granted. A collision costs 2 lives.',
     tag: 'HOSTILE', iconKind: 'tank', iconColor: '#5f7ea8'
   },
   {
     id: 'tank3', name: 'TANK MK.III', score: '300 PTS',
-    desc: 'The heaviest tank variant — barely moves, but its hull strength makes it the toughest non-boss target in the field.',
+    desc: 'The heaviest tank variant, and the fastest of the three — its hull strength makes it the toughest non-boss target in the field. A collision costs 3 lives, so don\u2019t get careless.',
     tag: 'HOSTILE', iconKind: 'tank', iconColor: '#3f5d87'
+  },
+  {
+    id: 'mine', name: 'MINE', score: '130 PTS',
+    desc: 'Dormant until you drift within range, then it arms (watch for red pulsing dots) and chases at a steady pace for 7 seconds before detonating. Shoot it down before the fuse runs out, or just give it a wide berth.',
+    tag: 'HAZARD', iconKind: 'mine', iconColor: '#ff3d6e'
   },
   {
     id: 'boss', name: 'THE CAPTAIN', score: '1200 PTS',
@@ -2902,6 +3246,14 @@ function drawSimpleEnemyIcon(svgHost, entry){
     inner = `<polygon points="32,6 54,18 54,46 32,58 10,46 10,18" fill="none" stroke="${entry.iconColor}" stroke-width="2.4" stroke-linejoin="round"/><polygon points="32,18 44,25 44,39 32,46 20,39 20,25" fill="none" stroke="${entry.iconColor}" stroke-width="1.8" stroke-linejoin="round"/>`;
   } else if(entry.iconKind === 'marksman'){
     inner = `<polygon points="54,32 32,12 10,32 32,52" fill="none" stroke="${entry.iconColor}" stroke-width="2.2" stroke-linejoin="round"/><circle cx="32" cy="32" r="6" fill="none" stroke="${entry.iconColor}" stroke-width="2"/><line x1="38" y1="32" x2="60" y2="32" stroke="${entry.iconColor}" stroke-width="2"/>`;
+  } else if(entry.iconKind === 'mine'){
+    inner = `<circle cx="32" cy="32" r="14" fill="none" stroke="${entry.iconColor}" stroke-width="2.2"/>` +
+      Array.from({length:8}, (_,s) => {
+        const a = (s/8)*Math.PI*2;
+        const ix = 32+Math.cos(a)*14, iy = 32+Math.sin(a)*14;
+        const ox = 32+Math.cos(a)*22, oy = 32+Math.sin(a)*22;
+        return `<line x1="${ix}" y1="${iy}" x2="${ox}" y2="${oy}" stroke="${entry.iconColor}" stroke-width="2.2"/>`;
+      }).join('');
   }
   svgHost.innerHTML = `<svg viewBox="0 0 64 64" width="100%" height="100%">${inner}</svg>`;
 }

@@ -92,6 +92,25 @@
     line-height: 1.6;
   }
 
+  #specialization-reminder {
+    margin-top: 10px;
+    font-size: 9.5px;
+    letter-spacing: 1.5px;
+    color: var(--amber);
+    text-shadow: 0 0 8px rgba(255,179,71,0.6);
+    max-width: 180px;
+    animation: specialization-pulse 2.4s ease-in-out infinite;
+  }
+
+  @keyframes specialization-pulse {
+    0%, 100% { opacity: 0.65; }
+    50% { opacity: 1; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    #specialization-reminder { animation: none; opacity: 0.9; }
+  }
+
   #weapon-readout {
     position: absolute;
     bottom: 22px;
