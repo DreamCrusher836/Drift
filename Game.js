@@ -99,13 +99,15 @@ const STATE = {
   PLAYING: 'playing',
   PAUSED: 'paused',
   UPGRADE: 'upgrade',
+  DYING: 'dying',   // transitional: last life lost, explosion/reveal sequence playing, world frozen
   DEAD: 'dead'
 };
 let gameState = STATE.MENU;
 
 let score = 0;
-let nextUpgradeAt = 1500;
-let upgradeStep = 1500;
+let playerXP = 0;          // XP toward the next card, resets each level
+let playerLevel = 1;       // current level (== number of cards drawn + 1)
+let xpForNextLevel = 10;   // XP needed to reach the next level (first level needs 10)
 let waveLevel = 1;
 let elapsedTime = 0;
 let lastSpawnCheck = 0;
@@ -113,6 +115,8 @@ let lastSpawnCheck = 0;
 const keys = {};
 let mouseX = CX, mouseY = CY;
 let mouseDown = false;
+let aimJitterRemaining = 0; // ms remaining on the Black Hole "Scramble" outcome's aim jitter
+let reversePolarityRemaining = 0; // ms remaining on the Black Hole "Reverse Polarity" outcome's temporary buff
 
 /* world offset: how far the "camera" (i.e. the field) has shifted.
    Moving the ship right == shifting world left under it. */
@@ -404,20 +408,61 @@ function spawnEnemy(type, forcedX, forcedY){
     });
   } else if(type === 'hunter'){
     Object.assign(base, {
-      type, radius: 11, hp: 3, maxHp: 3,
+      type: 'hunter', tier: 1, radius: 11, hp: 3, maxHp: 3,
       speed: rand(2.0,2.6),
       fireRate: 1400,
-      color: 'magenta',
+      color: 'hunter1',
       scoreValue: 140
+    });
+  } else if(type === 'hunter2'){
+    Object.assign(base, {
+      type: 'hunter', tier: 2, radius: 11, hp: 4, maxHp: 4,
+      speed: rand(2.4,3.0),
+      fireRate: 1150,
+      color: 'hunter2',
+      scoreValue: 170
+    });
+  } else if(type === 'hunter3'){
+    Object.assign(base, {
+      type: 'hunter', tier: 3, radius: 11, hp: 5, maxHp: 5,
+      speed: rand(2.8,3.4),
+      fireRate: 950,
+      color: 'hunter3',
+      scoreValue: 200
     });
   } else if(type === 'turret'){
     Object.assign(base, {
-      type, radius: 16, hp: 4, maxHp: 4,
-      speed: 0.8,
-      preferredRange: 320,
-      fireRate: 1100,
-      color: 'purple',
-      scoreValue: 160
+      type: 'turret', tier: 1, barrels: 1, radius: 16, hp: 4, maxHp: 4,
+      speed: 0.8, preferredRange: 280,
+      burstSize: 4, burstInterval: 160, burstCooldown: 2200,
+      burstShotsLeft: 0, burstTimer: 0, onCooldown: false,
+      color: 'turret1', scoreValue: 160
+    });
+  } else if(type === 'turret2'){
+    Object.assign(base, {
+      type: 'turret', tier: 2, barrels: 2, radius: 18, hp: 6, maxHp: 6,
+      speed: 0.9, preferredRange: 300,
+      burstSize: 4, burstInterval: 150, burstCooldown: 2000,
+      burstShotsLeft: 0, burstTimer: 0, onCooldown: false,
+      color: 'turret2', scoreValue: 210
+    });
+  } else if(type === 'turret3'){
+    Object.assign(base, {
+      type: 'turret', tier: 3, barrels: 3, radius: 20, hp: 8, maxHp: 8,
+      speed: 1.0, preferredRange: 320,
+      burstSize: 4, burstInterval: 130, burstCooldown: 1800,
+      burstShotsLeft: 0, burstTimer: 0, onCooldown: false,
+      color: 'turret3', scoreValue: 260
+    });
+  } else if(type === 'bastion'){
+    Object.assign(base, {
+      type: 'bastion', radius: 30, hp: 22, maxHp: 22,
+      speed: 0.65, preferredRange: 360,
+      barrels: 3,
+      burstSize: 7, burstInterval: 130, burstCooldown: 2800,
+      burstShotsLeft: 0, burstTimer: 0, onCooldown: false,
+      color: 'bastion',
+      scoreValue: 700
     });
   } else if(type === 'boss'){
     Object.assign(base, {
@@ -441,6 +486,14 @@ function spawnEnemy(type, forcedX, forcedY){
       color: 'green',
       scoreValue: 1400
     });
+  } else if(type === 'bonus'){
+    Object.assign(base, {
+      type, radius: 17, hp: 4, maxHp: 4,
+      speed: rand(1.8, 2.4),
+      travelAngle: rand(0, Math.PI*2), // flies a straight line in a random direction, ignores the player entirely
+      color: 'bonus',
+      scoreValue: 100
+    });
   } else if(type === 'mine'){
     Object.assign(base, {
       type, radius: 14, hp: 3, maxHp: 3,
@@ -451,6 +504,27 @@ function spawnEnemy(type, forcedX, forcedY){
       mineFuse: 7000,          // ms after triggering before it detonates on its own
       color: 'mine',
       scoreValue: 130
+    });
+  } else if(type === 'blackhole_small'){
+    Object.assign(base, {
+      type: 'blackhole', bhSize: 'small', radius: 24, hp: Infinity, indestructible: true,
+      speed: 0,
+      pullRadius: 180, eventHorizonRadius: 35, pullStrength: 0.14,
+      color: 'blackhole', scoreValue: 0
+    });
+  } else if(type === 'blackhole_medium'){
+    Object.assign(base, {
+      type: 'blackhole', bhSize: 'medium', radius: 34, hp: Infinity, indestructible: true,
+      speed: 0,
+      pullRadius: 240, eventHorizonRadius: 45, pullStrength: 0.24,
+      color: 'blackhole', scoreValue: 0
+    });
+  } else if(type === 'blackhole_large'){
+    Object.assign(base, {
+      type: 'blackhole', bhSize: 'large', radius: 46, hp: Infinity, indestructible: true,
+      speed: 0,
+      pullRadius: 320, eventHorizonRadius: 58, pullStrength: 0.34,
+      color: 'blackhole', scoreValue: 0
     });
   }
   enemies.push(base);
@@ -465,6 +539,20 @@ let bossSpawnedAtWave = 0;
 let swarmActive = false;
 let swarmTimeRemaining = 0;
 let swarmSpawnTimer = 0;
+
+/* ============================================================
+   BONUS SHIP — a rare, harmless flyby (classic "Space Invaders
+   bonus UFO" idea). It doesn't chase or fire at the player and
+   can't be collided with for damage either way — the only way to
+   interact with it is to shoot it down, which rolls one reward
+   from BONUS_REWARDS (see near killEnemy). Rather than a fixed
+   timer, it's a small chance rolled on every normal spawn cycle
+   (same cadence as everything else the wave director spawns) —
+   so it stays genuinely rare and unpredictable instead of
+   appearing on a clock the player could learn to anticipate.
+   Capped at one on screen at a time.
+============================================================ */
+const BONUS_SHIP_CHANCE = 0.015; // ~1.5% of spawn cycles
 
 /* ============================================================
    SPAWN REGULATION — every so often, one enemy type becomes the
@@ -503,7 +591,7 @@ function rollNewSpawnFocus(){
 let hazardFocusType = null;      // null, 'large', 'medium', 'small', or 'mine'
 let hazardFocusTimer = 0;
 
-const HAZARD_FOCUS_CANDIDATES = ['large', 'medium', 'small', 'mine'];
+const HAZARD_FOCUS_CANDIDATES = ['large', 'medium', 'small', 'mine', 'blackhole_small', 'blackhole_medium', 'blackhole_large'];
 
 function rollNewHazardFocus(){
   if(Math.random() < 0.33){
@@ -538,14 +626,22 @@ function updateWaveDirector(dt){
   if(spawnTimer > baseInterval){
     spawnTimer = 0;
 
+    // rare bonus ship chance, rolled on the same cadence as everything else —
+    // checked first and skips the rest of this cycle's normal spawn when it
+    // hits, so it doesn't stack on top of a regular spawn.
+    const bonusShipSpawned = !enemies.some(e => e.type === 'bonus') && Math.random() < BONUS_SHIP_CHANCE;
+    if(bonusShipSpawned) spawnEnemy('bonus');
+
     const asteroidChance = Math.max(0.35, 0.7 - diff*0.05);
-    if(Math.random() < asteroidChance){
+    if(bonusShipSpawned){
+      // skip the normal asteroid/enemy roll this cycle
+    } else if(Math.random() < asteroidChance){
       // hazard mix: asteroid sizes plus a rare chance of a mine, both
       // regulated by the same focus-rotation idea as the enemy mix —
       // mines stay rare on their own, but the focus can occasionally
       // tilt a stretch of the field toward "more mines than usual"
       // without ever taking over completely.
-      let hazardWeights = { large: 0.35, medium: 0.35, small: 0.3, mine: 0.04 };
+      let hazardWeights = { large: 0.33, medium: 0.33, small: 0.28, mine: 0.04, blackhole_small: 0.012, blackhole_medium: 0.006, blackhole_large: 0.002 };
       if(hazardFocusType && hazardWeights[hazardFocusType] !== undefined){
         hazardWeights[hazardFocusType] *= 3;
       }
@@ -559,6 +655,8 @@ function updateWaveDirector(dt){
       }
       if(chosenHazard === 'mine'){
         spawnEnemy('mine');
+      } else if(chosenHazard.startsWith('blackhole_')){
+        spawnEnemy(chosenHazard);
       } else {
         spawnAsteroid(chosenHazard);
       }
@@ -572,9 +670,9 @@ function updateWaveDirector(dt){
       } else if(diff < 2.6){
         weights = { drifter: 0.65, hunter: 0.35 };
       } else if(diff < 3.4){
-        weights = { drifter: 0.45, hunter: 0.35, turret: 0.2 };
+        weights = { drifter: 0.45, hunter: 0.3, hunter2: 0.05, turret: 0.2 };
       } else {
-        weights = { drifter: 0.35, hunter: 0.25, turret: 0.2, tank: 0.12, tank2: 0.05, tank3: 0.03 };
+        weights = { drifter: 0.35, hunter: 0.15, hunter2: 0.05, hunter3: 0.02, turret: 0.14, turret2: 0.04, turret3: 0.02, tank: 0.12, tank2: 0.05, tank3: 0.03 };
       }
 
       // apply the spawn focus: triple the favored type's weight if it's
@@ -612,22 +710,25 @@ function updateWaveDirector(dt){
     }
   }
 
-  // every ~5000 score, randomly trigger one of: Captain boss, drifter swarm, or Marksman — once per threshold
+  // every ~5000 score, randomly trigger one of: Captain, Drifter swarm, Marksman, or Bastion
   const bossWaveTarget = Math.floor(score/5000);
   if(bossWaveTarget > bossSpawnedAtWave && bossWaveTarget > 0){
     bossSpawnedAtWave = bossWaveTarget;
     const eventRoll = Math.random();
-    if(eventRoll < 0.34){
+    if(eventRoll < 0.25){
       spawnEnemy('boss');
       flashWaveBanner('CAPTAIN INBOUND');
-    } else if(eventRoll < 0.67){
+    } else if(eventRoll < 0.5){
       swarmActive = true;
       swarmTimeRemaining = 10000;
       swarmSpawnTimer = 0;
       flashWaveBanner('INCOMING WAVE OF DRIFTERS');
-    } else {
+    } else if(eventRoll < 0.75){
       spawnEnemy('marksman');
       flashWaveBanner('MARKSMAN INBOUND');
+    } else {
+      spawnEnemy('bastion');
+      flashWaveBanner('THE BASTION INBOUND');
     }
   }
 }
@@ -646,7 +747,8 @@ function flashWaveBanner(text){
 ============================================================ */
 function fireWeapon(){
   const speedRatio = player.maxSpeed > 0 ? Math.min(1, player.speed / player.maxSpeed) : 0;
-  const effectiveFireRate = weapon.fireRate * (1 - weapon.slipstreamBonus * speedRatio);
+  const reversePolarityBonus = reversePolarityRemaining > 0 ? 0.5 : 1;
+  const effectiveFireRate = weapon.fireRate * (1 - weapon.slipstreamBonus * speedRatio) * reversePolarityBonus;
 
   const now = performance.now();
   if(now - weapon.lastFire < effectiveFireRate) return;
@@ -842,6 +944,30 @@ const MISSILE_CONFIG = {
   cooldown: 5500
 };
 
+/* ============================================================
+   LASER ABILITY — hold SPACE to charge (a thin telegraph line
+   shows for ~1s), then a thick green beam fires for 3 seconds,
+   tracking the cursor live and dealing continuous damage to
+   anything it sweeps across. Letting go during the charge
+   cancels the shot but still burns the cooldown, so committing
+   to the charge matters. The beam extends past the screen edge.
+============================================================ */
+const LASER_CONFIG = {
+  chargeTime: 1000,        // ms of holding SPACE before the beam fires
+  fireTime: 3000,          // ms the beam stays live
+  beamLength: 1600,        // world units — comfortably past the screen edge
+  beamWidth: 14,           // half-thickness for hit detection
+  damagePerTick: 0.9,      // damage applied each frame to anything in the beam
+  cooldown: 8000
+};
+
+// laser runtime state: 'idle' while not in use, 'charging' during the
+// telegraph, 'firing' while the beam is live. Driven by the SPACE hold
+// in the update loop, independent of the edge-triggered ability input.
+let laserState = 'idle';
+let laserTimer = 0;        // counts the current phase (charge or fire)
+let laserAngle = 0;        // live aim direction
+
 function fireMissile(){
   missiles.push({
     x: worldShiftX, y: worldShiftY,
@@ -960,6 +1086,144 @@ function detonateMine(wx, wy){
   spawnExplosion(screenX, screenY, 'magenta', 24, true);
 }
 
+/* ============================================================
+   BLACK HOLE — a rare, indestructible environmental hazard in
+   3 sizes. Exerts a real gravitational pull on the player's own
+   velocity (see the movement block in update()) that gets
+   stronger the closer you drift, and the bigger the hole. If the
+   player crosses the much smaller event-horizon radius, exactly
+   one of 7 equally-likely outcomes fires — a mix of good, bad,
+   and disorienting — and the black hole itself disappears, since
+   it's single-use.
+============================================================ */
+function severityForBlackHole(e){
+  // small=1, medium=2, large=3 — used by the heart-loss outcome
+  return e.bhSize === 'large' ? 3 : e.bhSize === 'medium' ? 2 : 1;
+}
+
+function triggerBlackHoleEvent(e){
+  const idx = enemies.indexOf(e);
+  if(idx === -1) return; // already consumed this frame
+  const wx = e.x, wy = e.y;
+  const severity = severityForBlackHole(e);
+  enemies.splice(idx, 1); // single-use — gone the moment it triggers
+
+  const outcomes = ['heartloss', 'detonate', 'reversepolarity', 'scramble', 'treasure', 'vacuum', 'doubleornothing'];
+  const outcome = outcomes[Math.floor(Math.random() * outcomes.length)];
+  runBlackHoleOutcome(outcome, wx, wy, severity);
+}
+
+function runBlackHoleOutcome(outcome, wx, wy, severity){
+  const screenX = wx - worldShiftX + CX;
+  const screenY = wy - worldShiftY + CY;
+
+  if(outcome === 'heartloss'){
+    // pulled in, lose hearts based on the hole's size, then dropped into a
+    // freshly cleared patch of space — "the whole space just empties"
+    flashWaveBanner('PULLED INTO THE VOID');
+    damagePlayer(severity);
+    spawnExplosion(screenX, screenY, 'purple', 30, true);
+    clearNearbyField(wx, wy, 500);
+
+  } else if(outcome === 'detonate'){
+    // the hole collapses and explodes outward, destroying everything in a
+    // big radius — the player is at the center of it but is never the target
+    flashWaveBanner('GRAVITATIONAL COLLAPSE');
+    const blastRadius = 260;
+    const nearbyEnemies = enemyGrid ? new Set(gridQuery(enemyGrid, wx, wy, blastRadius)) : null;
+    for(let ei=enemies.length-1; ei>=0; ei--){
+      const en = enemies[ei];
+      if(en.type === 'blackhole') continue;
+      if(nearbyEnemies && !nearbyEnemies.has(en)) continue;
+      if(dist2(en.x,en.y,wx,wy) < blastRadius*blastRadius){
+        const sx = en.x - worldShiftX + CX, sy = en.y - worldShiftY + CY;
+        killEnemy(en, ei, sx, sy);
+      }
+    }
+    const nearbyAsteroids = asteroidGrid ? new Set(gridQuery(asteroidGrid, wx, wy, blastRadius)) : null;
+    for(let ai=asteroids.length-1; ai>=0; ai--){
+      const a = asteroids[ai];
+      if(nearbyAsteroids && !nearbyAsteroids.has(a)) continue;
+      if(dist2(a.x,a.y,wx,wy) < blastRadius*blastRadius){
+        const sx = a.x - worldShiftX + CX, sy = a.y - worldShiftY + CY;
+        addScore(a.size === 'large' ? 60 : a.size === 'medium' ? 35 : 20);
+        trackKill(a.size==='large' ? 'ast_large' : a.size==='medium' ? 'ast_medium' : 'ast_small');
+        asteroids.splice(ai,1);
+        spawnExplosion(sx, sy, 'grey', 8, false);
+      }
+    }
+    spawnExplosion(screenX, screenY, 'purple', 40, true);
+
+  } else if(outcome === 'reversepolarity'){
+    // a brief power surge instead of harm
+    flashWaveBanner('REVERSE POLARITY — OVERCHARGED');
+    reversePolarityRemaining = 6000;
+    spawnExplosion(screenX, screenY, 'cyan', 26, true);
+
+  } else if(outcome === 'scramble'){
+    // yanked to a random nearby spot, aim gets briefly jittery
+    flashWaveBanner('SCRAMBLED');
+    const scrambleAngle = rand(0, Math.PI*2);
+    const scrambleDist = rand(150, 350);
+    worldShiftX += Math.cos(scrambleAngle)*scrambleDist;
+    worldShiftY += Math.sin(scrambleAngle)*scrambleDist;
+    player.vx = 0; player.vy = 0;
+    aimJitterRemaining = 2000;
+    spawnExplosion(screenX, screenY, 'amber', 20, true);
+
+  } else if(outcome === 'treasure'){
+    // instant bonus score, no harm at all
+    flashWaveBanner('DENSE CORE SALVAGED');
+    addScore(400);
+    spawnExplosion(screenX, screenY, 'green', 30, true);
+
+  } else if(outcome === 'vacuum'){
+    // drags in and destroys nearby asteroids/hazards, clearing space —
+    // a "good" outcome that still feels like the black hole did something
+    flashWaveBanner('FIELD CLEARED');
+    const vacuumRadius = 400;
+    const nearbyAsteroids = asteroidGrid ? new Set(gridQuery(asteroidGrid, wx, wy, vacuumRadius)) : null;
+    for(let ai=asteroids.length-1; ai>=0; ai--){
+      const a = asteroids[ai];
+      if(nearbyAsteroids && !nearbyAsteroids.has(a)) continue;
+      if(dist2(a.x,a.y,wx,wy) < vacuumRadius*vacuumRadius){
+        const sx = a.x - worldShiftX + CX, sy = a.y - worldShiftY + CY;
+        addScore(a.size === 'large' ? 60 : a.size === 'medium' ? 35 : 20);
+        trackKill(a.size==='large' ? 'ast_large' : a.size==='medium' ? 'ast_medium' : 'ast_small');
+        asteroids.splice(ai,1);
+        spawnExplosion(sx, sy, 'grey', 6, false);
+      }
+    }
+    spawnExplosion(screenX, screenY, 'cyan', 24, true);
+
+  } else if(outcome === 'doubleornothing'){
+    // a re-roll between a worse bad outcome and a better good outcome
+    flashWaveBanner('DOUBLE OR NOTHING');
+    if(Math.random() < 0.5){
+      damagePlayer(Math.min(3, severity + 1));
+      spawnExplosion(screenX, screenY, 'magenta', 36, true);
+      clearNearbyField(wx, wy, 500);
+    } else {
+      addScore(800);
+      spawnExplosion(screenX, screenY, 'green', 36, true);
+    }
+  }
+}
+
+// clears nearby asteroids/enemies (never the player) around a point, giving
+// the player breathing room after being pulled somewhere new
+function clearNearbyField(wx, wy, radius){
+  for(let i=enemies.length-1;i>=0;i--){
+    const e = enemies[i];
+    if(e.type === 'blackhole') continue;
+    if(dist2(e.x,e.y,wx,wy) < radius*radius) enemies.splice(i,1);
+  }
+  for(let i=asteroids.length-1;i>=0;i--){
+    const a = asteroids[i];
+    if(dist2(a.x,a.y,wx,wy) < radius*radius) asteroids.splice(i,1);
+  }
+}
+
 function updateMissiles(dt){
   for(let i=missiles.length-1;i>=0;i--){
     const m = missiles[i];
@@ -1006,6 +1270,144 @@ function updateMissiles(dt){
   }
 }
 
+function updateLaser(dt){
+  if(laserState === 'idle') return;
+
+  // live aim toward the cursor the entire time (charge and fire)
+  laserAngle = Math.atan2(mouseY - CY, mouseX - CX);
+
+  if(laserState === 'charging'){
+    // releasing SPACE before the charge completes cancels the shot — but the
+    // cooldown still applies, so letting go early is a real punishment
+    if(!keys['Space']){
+      laserState = 'idle';
+      abilityCooldownRemaining = LASER_CONFIG.cooldown;
+      return;
+    }
+    laserTimer += dt;
+    if(laserTimer >= LASER_CONFIG.chargeTime){
+      laserState = 'firing';
+      laserTimer = 0;
+    }
+  } else if(laserState === 'firing'){
+    laserTimer += dt;
+    dealLaserDamage(dt);
+    if(laserTimer >= LASER_CONFIG.fireTime){
+      laserState = 'idle';
+      abilityCooldownRemaining = LASER_CONFIG.cooldown;
+    }
+  }
+}
+
+// applies continuous damage to every enemy/asteroid lying within the beam's
+// width along its length (a point-to-ray distance test from the player)
+function dealLaserDamage(dt){
+  const dirX = Math.cos(laserAngle), dirY = Math.sin(laserAngle);
+  const ox = worldShiftX, oy = worldShiftY; // beam origin = player world position
+  const len = LASER_CONFIG.beamLength;
+  const w = LASER_CONFIG.beamWidth;
+  const dmg = LASER_CONFIG.damagePerTick;
+
+  function alongBeam(ex, ey){
+    // projection of the point onto the beam direction, and perpendicular distance
+    const relX = ex - ox, relY = ey - oy;
+    const proj = relX*dirX + relY*dirY;        // distance along the beam
+    if(proj < 0 || proj > len) return false;   // behind the player or past the tip
+    const perpX = relX - proj*dirX, perpY = relY - proj*dirY;
+    return (perpX*perpX + perpY*perpY) <= w*w;
+  }
+
+  for(let i=enemies.length-1;i>=0;i--){
+    const e = enemies[i];
+    if(e.type === 'blackhole') continue; // indestructible, beam passes through
+    if(alongBeam(e.x, e.y)){
+      e.hp -= dmg;
+      e.hitFlash = 80;
+      if(e.hp <= 0){
+        const sx = e.x - worldShiftX + CX, sy = e.y - worldShiftY + CY;
+        killEnemy(e, i, sx, sy);
+      }
+    }
+  }
+  for(let i=asteroids.length-1;i>=0;i--){
+    const a = asteroids[i];
+    if(alongBeam(a.x, a.y)){
+      a.hp -= dmg;
+      a.hitFlash = 80;
+      if(a.hp <= 0){
+        const sx = a.x - worldShiftX + CX, sy = a.y - worldShiftY + CY;
+        addScore(a.size === 'large' ? 60 : a.size === 'medium' ? 35 : 20);
+        spawnExplosion(sx, sy, 'grey', 10, a.size==='large');
+        trackKill(a.size==='large' ? 'ast_large' : a.size==='medium' ? 'ast_medium' : 'ast_small');
+        splitAsteroid(a);
+        asteroids.splice(i,1);
+      }
+    }
+  }
+}
+
+function drawPlayerLaser(){
+  if(laserState === 'idle') return;
+  ctx.save();
+
+  const dirX = Math.cos(laserAngle), dirY = Math.sin(laserAngle);
+  // beam starts at the ship (screen center) and extends forward past the edge
+  const reach = LASER_CONFIG.beamLength;
+  const x1 = CX, y1 = CY;
+  const x2 = CX + dirX*reach, y2 = CY + dirY*reach;
+
+  if(laserState === 'charging'){
+    // thin pulsing warning line showing where the beam will fire, plus a
+    // small charging glow at the muzzle that grows as it nears full charge
+    const chargeFrac = Math.min(1, laserTimer / LASER_CONFIG.chargeTime);
+    const pulse = 0.5 + 0.5*Math.sin(performance.now()/70);
+    ctx.strokeStyle = `rgba(125,255,140,${0.3 + pulse*0.3})`;
+    ctx.lineWidth = 1.4;
+    ctx.shadowColor = '#7dff8c';
+    ctx.shadowBlur = 6 * glowScale;
+    ctx.setLineDash([10, 8]);
+    ctx.beginPath();
+    ctx.moveTo(x1,y1);
+    ctx.lineTo(x2,y2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    // growing charge orb at the muzzle
+    ctx.fillStyle = `rgba(125,255,140,${0.4 + chargeFrac*0.5})`;
+    ctx.shadowBlur = 12 * glowScale;
+    ctx.beginPath();
+    ctx.arc(CX + dirX*22, CY + dirY*22, 2 + chargeFrac*7, 0, Math.PI*2);
+    ctx.fill();
+
+  } else if(laserState === 'firing'){
+    // a brief flare-in/flare-out at the very start and end of the beam
+    const fireFrac = laserTimer / LASER_CONFIG.fireTime;
+    let intensity = 1;
+    if(fireFrac < 0.08) intensity = fireFrac / 0.08;          // ramp up
+    else if(fireFrac > 0.9) intensity = (1 - fireFrac) / 0.1; // fade out
+    intensity = Math.max(0.15, intensity);
+
+    // outer glow
+    ctx.strokeStyle = `rgba(125,255,140,${0.9*intensity})`;
+    ctx.lineWidth = LASER_CONFIG.beamWidth * 1.8;
+    ctx.shadowColor = '#7dff8c';
+    ctx.shadowBlur = 26 * glowScale;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(x1,y1);
+    ctx.lineTo(x2,y2);
+    ctx.stroke();
+    // bright hot white core
+    ctx.strokeStyle = `rgba(255,255,255,${0.95*intensity})`;
+    ctx.lineWidth = LASER_CONFIG.beamWidth * 0.5;
+    ctx.shadowBlur = 0;
+    ctx.beginPath();
+    ctx.moveTo(x1,y1);
+    ctx.lineTo(x2,y2);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
 function drawMissiles(){
   ctx.save();
   for(const m of missiles){
@@ -1016,7 +1418,7 @@ function drawMissiles(){
     ctx.rotate(m.angle);
     ctx.strokeStyle = '#ffb347';
     ctx.shadowColor = '#ffb347';
-    ctx.shadowBlur = 10;
+    ctx.shadowBlur = 10 * glowScale;
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.moveTo(10,0);
@@ -1045,7 +1447,7 @@ function drawDrones(){
     ctx.translate(d._screenX, d._screenY);
     ctx.strokeStyle = '#5fe3ff';
     ctx.shadowColor = '#5fe3ff';
-    ctx.shadowBlur = 8;
+    ctx.shadowBlur = 8 * glowScale;
     ctx.lineWidth = 1.6;
     ctx.beginPath();
     ctx.arc(0,0,d.radius,0,Math.PI*2);
@@ -1061,7 +1463,7 @@ function drawDrones(){
     const screenY = b.y - worldShiftY + CY;
     ctx.fillStyle = '#5fe3ff';
     ctx.shadowColor = '#5fe3ff';
-    ctx.shadowBlur = 6;
+    ctx.shadowBlur = 6 * glowScale;
     ctx.beginPath();
     ctx.arc(screenX, screenY, b.radius, 0, Math.PI*2);
     ctx.fill();
@@ -1256,12 +1658,13 @@ function renderKillLog(logContainerId, totalContainerId){
 // strength tier definitions: multiplier scales the upgrade's base effect,
 // weight is the probability of rolling that tier on layer 2
 const TIER_DEFS = {
-  low:       { label: 'LOW',       multiplier: 1.0, weight: 50, cssClass: 'tier-low' },
-  medium:    { label: 'MEDIUM',    multiplier: 1.6, weight: 30, cssClass: 'tier-medium' },
-  high:      { label: 'HIGH',      multiplier: 2.4, weight: 15, cssClass: 'tier-high' },
-  legendary: { label: 'LEGENDARY', multiplier: 3.5, weight: 5,  cssClass: 'tier-legendary' }
+  low:       { label: 'LOW',       multiplier: 1.0,  weight: 50,  cssClass: 'tier-low' },
+  medium:    { label: 'MEDIUM',    multiplier: 1.6,  weight: 30,  cssClass: 'tier-medium' },
+  high:      { label: 'HIGH',      multiplier: 2.4,  weight: 15,  cssClass: 'tier-high' },
+  legendary: { label: 'LEGENDARY', multiplier: 3.5,  weight: 4,   cssClass: 'tier-legendary' },
+  stellar:   { label: 'STELLAR',   multiplier: 6.0,  weight: 1,   cssClass: 'tier-stellar' }
 };
-const TIER_ORDER = ['low','medium','high','legendary'];
+const TIER_ORDER = ['low','medium','high','legendary','stellar'];
 
 function rollTier(){
   const totalWeight = TIER_ORDER.reduce((s,k)=>s+TIER_DEFS[k].weight, 0);
@@ -1633,7 +2036,7 @@ const UPGRADE_POOL = [
     descBase: 'Fire an additional lane of projectiles in a wider spread.',
     available(){ return weapon.spread < 6; },
     getEffect(tier){
-      const lanes = tier === 'legendary' ? 2 : 1;
+      const lanes = tier === 'stellar' ? 3 : tier === 'legendary' ? 2 : 1;
       return { text: `+${lanes} bullet lane${lanes>1?'s':''}`, lanes };
     },
     apply(tier){
@@ -1652,8 +2055,8 @@ const UPGRADE_POOL = [
     descBase: 'Repair the hull and raise your maximum life capacity.',
     available(){ return player.maxLives < 8; },
     getEffect(tier){
-      const lives = tier === 'legendary' ? 2 : 1;
-      const shieldBonus = tier === 'high' ? 1 : tier === 'legendary' ? 1 : 0;
+      const lives = tier === 'stellar' ? 3 : tier === 'legendary' ? 2 : 1;
+      const shieldBonus = tier === 'stellar' ? 2 : tier === 'high' ? 1 : tier === 'legendary' ? 1 : 0;
       const text = shieldBonus > 0
         ? `+${lives} max life, +${shieldBonus} shield charge`
         : `+${lives} max life`;
@@ -1756,7 +2159,7 @@ const UPGRADE_POOL = [
     descBase: "Widens your projectiles' hit radius, making it easier to land shots.",
     available(){ return weapon.projSize < 8; },
     getEffect(tier){
-      const add = tier === 'legendary' ? 2 : 1;
+      const add = tier === 'stellar' ? 3 : tier === 'legendary' ? 2 : 1;
       return { text: `+${add} projectile size`, add };
     },
     apply(tier){
@@ -1779,7 +2182,7 @@ const ARMOR_UPGRADE = {
   descBase: 'Charge a shield that absorbs hits before hull damage is taken.',
   available(){ return true; },
   getEffect(tier){
-    const charges = tier === 'legendary' ? 3 : tier === 'high' ? 2 : 1;
+    const charges = tier === 'stellar' ? 4 : tier === 'legendary' ? 3 : tier === 'high' ? 2 : 1;
     return { text: `+${charges} shield charge${charges>1?'s':''}`, charges };
   },
   apply(tier){
@@ -1824,6 +2227,37 @@ const ABILITY_POOL = [
       fireMissile();
     }
   },
+  {
+    id: 'laser',
+    name: 'LANCE BEAM',
+    tag: 'ABILITY',
+    category: 'ability',
+    rarity: 'UNCOMMON',
+    weight: 9,
+    iconColor: 'green',
+    managesOwnCooldown: true, // charge/fire/cancel timing all handled in updateLaser()
+    descBase: 'Bind a charged beam to SPACE. Hold to charge for a moment (a thin line shows where it’ll fire), then unleash a sweeping beam for 3 seconds that melts anything it touches. Let go too early and you lose the shot but still pay the cooldown.',
+    cooldownMs: LASER_CONFIG.cooldown,
+    available(){ return !ownedAbilities['laser']; },
+    getEffect(){
+      const cd = (LASER_CONFIG.cooldown/1000).toFixed(1);
+      const fire = (LASER_CONFIG.fireTime/1000).toFixed(0);
+      return { text: `${fire}s sweeping beam &middot; continuous damage &middot; ${cd}s cooldown` };
+    },
+    apply(){
+      ownedAbilities['laser'] = true;
+      equippedAbilityId = 'laser';
+      abilityCooldownRemaining = 0;
+    },
+    activate(){
+      // begins the charge; the full state machine lives in updateLaser(),
+      // driven by whether SPACE stays held
+      if(laserState === 'idle'){
+        laserState = 'charging';
+        laserTimer = 0;
+      }
+    }
+  },
 ];
 
 function getEquippedAbility(){
@@ -1836,7 +2270,12 @@ function activateAbility(){
   if(!ability) return; // no ability owned yet — space does nothing
   if(abilityCooldownRemaining > 0) return;
   ability.activate();
-  abilityCooldownRemaining = ability.cooldownMs;
+  // most abilities fire-and-forget, so the cooldown starts immediately.
+  // Hold-based abilities (like the laser) manage their own cooldown timing
+  // internally and opt out via managesOwnCooldown.
+  if(!ability.managesOwnCooldown){
+    abilityCooldownRemaining = ability.cooldownMs;
+  }
 }
 
 function weightedPickDistinct(pool, count){
@@ -1866,9 +2305,20 @@ function isFamilyEligible(card){
   return lockedFamilies.length < MAX_LOCKED_FAMILIES;
 }
 
+// Once an ability is equipped, no OTHER ability may appear in future draws —
+// spacebar only ever drives one ability at a time (equippedAbilityId), so
+// offering a second one would just let the player overwrite their first pick.
+// This checks category:'ability' generically, so any new entry added to
+// ABILITY_POOL automatically gets this rule for free — nothing here needs to
+// change as that pool grows.
+function isAbilityEligible(card){
+  if(card.category !== 'ability') return true; // not an ability — rule doesn't apply
+  return !equippedAbilityId; // eligible only if no ability has been equipped yet
+}
+
 function pickUpgradeOptions(){
   const combinedPool = [...UPGRADE_POOL, ...ABILITY_POOL, ...JOKER_POOL]
-    .filter(card => card.available() && isFamilyEligible(card));
+    .filter(card => card.available() && isFamilyEligible(card) && isAbilityEligible(card));
 
   // First pick: a normal weighted draw across everything eligible right now.
   const chosen = [];
@@ -1966,6 +2416,9 @@ function drawUpgradeIcon(svgHost, color, id){
     case 'missile':
       inner = `<polygon points="50,32 18,18 24,32 18,46" fill="none" stroke="${c}" stroke-width="2.4" stroke-linejoin="round"/><line x1="10" y1="32" x2="20" y2="32" stroke="${c}" stroke-width="2"/>`;
       break;
+    case 'laser':
+      inner = `<polygon points="20,28 50,18 50,46 20,36" fill="none" stroke="${c}" stroke-width="2" stroke-linejoin="round"/><line x1="10" y1="32" x2="20" y2="32" stroke="${c}" stroke-width="3"/><line x1="50" y1="20" x2="58" y2="14" stroke="${c}" stroke-width="2"/><line x1="50" y1="32" x2="60" y2="32" stroke="${c}" stroke-width="2"/><line x1="50" y1="44" x2="58" y2="50" stroke="${c}" stroke-width="2"/>`;
+      break;
     case 'crit_strike':
       inner = `<polygon points="32,6 38,24 56,24 41,35 47,53 32,42 17,53 23,35 8,24 26,24" fill="none" stroke="${c}" stroke-width="2.2" stroke-linejoin="round"/><circle cx="32" cy="32" r="4" fill="${c}"/>`;
       break;
@@ -2011,6 +2464,20 @@ function drawUpgradeIcon(svgHost, color, id){
 function showUpgradeScreen(){
   gameState = STATE.UPGRADE;
   const options = pickUpgradeOptions();
+
+  // family-lock reminder now lives on this screen (only shown while picking a
+  // card) instead of constantly in the HUD corner — same logic as before.
+  const specReminder = document.getElementById('specialization-reminder');
+  if(lockedFamilies.length >= MAX_LOCKED_FAMILIES){
+    specReminder.classList.add('hidden');
+  } else {
+    specReminder.classList.remove('hidden');
+    const lockedLabels = lockedFamilies.map(f => FAMILY_DEFS[f] ? FAMILY_DEFS[f].label : f.toUpperCase());
+    specReminder.textContent = lockedFamilies.length === 0
+      ? 'CHOOSE 2 SPECIALIZATIONS'
+      : `${lockedLabels.join(' LOCKED')} LOCKED — CHOOSE 1 MORE`;
+  }
+
   const row = document.getElementById('card-row');
   row.innerHTML = '';
   options.forEach(({upgrade, tier})=>{
@@ -2031,6 +2498,43 @@ function showUpgradeScreen(){
       <div class="utag">${upgrade.tag} &middot; ${upgrade.rarity}</div>
     `;
     drawUpgradeIcon(card.querySelector('.icon-box'), upgrade.iconColor, upgrade.id);
+
+    // stellar cards get orbiting planet circles drawn along the border as an SVG overlay
+    if(tier === 'stellar'){
+      const planets = [
+        { size: 5, color: '#a78fff', orbitDuration: '6s',  delay: '0s'    },
+        { size: 3, color: '#ffe066', orbitDuration: '9s',  delay: '-3s'   },
+        { size: 4, color: '#5fe3ff', orbitDuration: '12s', delay: '-5s'   },
+        { size: 3, color: '#ff66cc', orbitDuration: '8s',  delay: '-1.5s' },
+        { size: 2, color: '#ffffff', orbitDuration: '11s', delay: '-7s'   },
+      ];
+      const svg = document.createElementNS('http://www.w3.org/2000/svg','svg');
+      svg.setAttribute('class','stellar-orbit-svg');
+      svg.setAttribute('viewBox','0 0 220 260');
+      svg.setAttribute('preserveAspectRatio','none');
+      planets.forEach(p => {
+        const circle = document.createElementNS('http://www.w3.org/2000/svg','circle');
+        circle.setAttribute('r', p.size);
+        circle.setAttribute('fill', p.color);
+        circle.setAttribute('filter', 'url(#stellar-glow)');
+        const anim = document.createElementNS('http://www.w3.org/2000/svg','animateMotion');
+        anim.setAttribute('dur', p.orbitDuration);
+        anim.setAttribute('begin', p.delay);
+        anim.setAttribute('repeatCount','indefinite');
+        // path traces the card perimeter rectangle
+        anim.setAttribute('path','M4,4 L216,4 L216,256 L4,256 Z');
+        circle.appendChild(anim);
+        svg.appendChild(circle);
+      });
+      // glow filter for the planets
+      const defs = document.createElementNS('http://www.w3.org/2000/svg','defs');
+      defs.innerHTML = `<filter id="stellar-glow" x="-80%" y="-80%" width="260%" height="260%">
+        <feGaussianBlur stdDeviation="2.5" result="blur"/>
+        <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+      </filter>`;
+      svg.insertBefore(defs, svg.firstChild);
+      card.appendChild(svg);
+    }
     card.addEventListener('click', ()=>{
       if(isAbility){
         upgrade.apply();
@@ -2107,12 +2611,93 @@ function damagePlayer(amount){
   }
 }
 
+/* ============================================================
+   DEATH SEQUENCE — instead of cutting straight to the stats
+   screen, the last hit kicks off a short staged sequence:
+     1. EXPLODE  — the world freezes (no normal update()), only
+        the explosion particles keep animating, while a few extra
+        bursts fire in sequence so the ship reads as breaking
+        apart rather than popping once.
+     2. REVEAL   — once the explosion settles, the death screen
+        fades in and "HULL BREACH" appears centered.
+     3. EXPAND   — a beat later, the message shifts up while the
+        stats panel expands from a thin line into a full box
+        (driven by CSS classes — see death-show-title /
+        death-show-panels in styles.css).
+   Driven by a simple ms timer rather than setTimeout so it can't
+   leave stray callbacks behind if the player restarts mid-sequence.
+============================================================ */
+let deathPhaseTimer = 0;
+let deathBurstsFired = 0;
+let shipDestroyed = false; // drawShip() skips drawing once true
+const DEATH_EXPLOSION_DURATION = 1700; // ms of pure explosion animation before the UI reveal begins
+const DEATH_BURST_TIMES = [0, 350, 700]; // ms marks within that window where an extra burst fires
+let deathRevealTimer = null; // single pending timeout for the panel-expand beat, tracked so resets can cancel it
+
 function triggerDeath(){
-  gameState = STATE.DEAD;
+  gameState = STATE.DYING;
   document.getElementById('pause-hint').classList.add('hidden');
+  shipDestroyed = true;
+  deathPhaseTimer = 0;
+  deathBurstsFired = 0;
+}
+
+// called from the main loop in place of update() while gameState is DYING
+function updateDeathSequence(dt){
+  deathPhaseTimer += dt;
+
+  // staged extra bursts — a few separate pops rather than one single explosion
+  while(deathBurstsFired < DEATH_BURST_TIMES.length && deathPhaseTimer >= DEATH_BURST_TIMES[deathBurstsFired]){
+    const sx = CX + rand(-18,18), sy = CY + rand(-18,18);
+    spawnExplosion(sx, sy, deathBurstsFired % 2 === 0 ? 'magenta' : 'amber', 26, true);
+    deathBurstsFired++;
+  }
+
+  // keep just the particles animating — the rest of the field stays frozen,
+  // which reads as the world "stopping" the moment the ship goes down
+  for(let i=particles.length-1;i>=0;i--){
+    const pt = particles[i];
+    pt.x += pt.vx; pt.y += pt.vy;
+    pt.vx *= 0.96; pt.vy *= 0.96;
+    pt.life -= dt;
+    if(pt.life <= 0) particles.splice(i,1);
+  }
+
+  if(deathPhaseTimer >= DEATH_EXPLOSION_DURATION){
+    revealDeathScreen();
+  }
+}
+
+function revealDeathScreen(){
+  gameState = STATE.DEAD;
+  particles = []; // clear any explosion stragglers so the reveal starts on a clean frame
   renderStatGrid('death-stats-left', buildShipStatRows());
   renderKillLog('death-kill-log', 'death-kill-total');
-  document.getElementById('death-screen').classList.remove('hidden');
+
+  const screen = document.getElementById('death-screen');
+  screen.classList.remove('death-fade-in', 'death-show-title', 'death-show-panels');
+  screen.classList.remove('hidden');
+
+  // force a reflow before adding the fade-in classes, otherwise the browser
+  // collapses the "hidden -> visible" and "opacity 0 -> 1" changes into one
+  // frame and the transition never plays
+  void screen.offsetWidth;
+  screen.classList.add('death-fade-in', 'death-show-title');
+
+  clearTimeout(deathRevealTimer);
+  deathRevealTimer = setTimeout(()=>{
+    screen.classList.add('death-show-panels');
+  }, 900);
+}
+
+// resets the death screen back to its pre-sequence state — used on restart/menu
+// so a second death later starts the staged reveal from scratch
+function hideDeathScreen(){
+  clearTimeout(deathRevealTimer);
+  deathRevealTimer = null;
+  const screen = document.getElementById('death-screen');
+  screen.classList.add('hidden');
+  screen.classList.remove('death-fade-in', 'death-show-title', 'death-show-panels');
 }
 
 // Staged-linear score threshold growth, modeled on how Vampire Survivors
@@ -2120,28 +2705,85 @@ function triggerDeath(){
 // amount steps up at a few points rather than compounding forever. This
 // keeps the late-game threshold from spiraling out of reach the way a
 // constant multiplier (the old 1.3x-per-upgrade system) eventually did.
-function nextThresholdStep(upgradesSoFar){
-  if(upgradesSoFar < 5) return 750;   // upgrades 1-5
-  if(upgradesSoFar < 10) return 1000; // upgrades 6-10
-  return 1300;                         // upgrade 11 onward
+/* ============================================================
+   XP / LEVELING — card draws are powered by XP, NOT score. XP
+   comes only from kills (a fixed amount per enemy type), so
+   score-boosting cards can't accelerate card draws and the
+   pacing stays stable no matter how high score climbs. The XP
+   needed per level grows in flat stages (staged-linear), so
+   early cards come fast and later ones stretch out smoothly
+   without ever exploding the way a multiplier would.
+============================================================ */
+function nextXPStep(level){
+  if(level <= 5) return 8;    // levels 1-5
+  if(level <= 12) return 12;  // levels 6-12
+  if(level <= 20) return 16;  // levels 13-20
+  return 20;                  // level 21+
+}
+
+// fixed XP per enemy type — scales with how tough/dangerous each is,
+// completely independent of its score value
+function xpValueFor(e){
+  if(e.type === 'drifter') return e.tier || 1;          // 1 / 2 / 3
+  if(e.type === 'tank') return 3 + (e.tier || 1) * 2;   // 5 / 7 / 9
+  if(e.type === 'hunter') return 2 + (e.tier || 1);
+  if(e.type === 'turret') return 3 + (e.tier || 1);
+  if(e.type === 'mine') return 4;
+  if(e.type === 'boss') return 25;
+  if(e.type === 'marksman') return 30;
+  if(e.type === 'bastion') return 15;
+  if(e.type === 'bonus') return 2; // the real reward comes from BONUS_REWARDS, this is just the baseline
+  return 1;
+}
+
+function gainXP(amount){
+  playerXP += amount;
+  // may cross several level boundaries at once on a big kill
+  while(playerXP >= xpForNextLevel){
+    playerXP -= xpForNextLevel;
+    playerLevel++;
+    xpForNextLevel += nextXPStep(playerLevel);
+    showUpgradeScreen();
+  }
+  updateXPReadout();
+}
+
+function updateXPReadout(){
+  const fillPct = xpForNextLevel > 0 ? Math.min(100, (playerXP / xpForNextLevel) * 100) : 0;
+  const fill = document.getElementById('xp-fill');
+  if(fill) fill.style.width = fillPct + '%';
+  const lvl = document.getElementById('xp-level-value');
+  if(lvl) lvl.textContent = playerLevel;
 }
 
 function addScore(amount){
   const bonusAmount = amount * (1 + player.scoreBonusPct/100);
   score += bonusAmount;
   document.getElementById('score-value').textContent = Math.floor(score);
-  if(score >= nextUpgradeAt){
-    nextUpgradeAt += nextThresholdStep(runStats.upgradesChosen);
-    document.getElementById('next-upgrade-value').textContent = Math.floor(nextUpgradeAt);
-    showUpgradeScreen();
-  }
-  document.getElementById('next-upgrade-value').textContent = Math.floor(nextUpgradeAt);
 }
 
 /* ============================================================
    UPDATE LOOP
 ============================================================ */
 let lastTime = performance.now();
+
+/* ============================================================
+   GLOW SCALING — ctx.shadowBlur (the glow on bullets/enemies/
+   asteroids) is the single most expensive thing this game draws.
+   At low entity counts it's free; at high counts (lots of enemies
+   and bullets on screen) it's the first thing that drags the
+   frame rate down. glowScale is recalculated once per frame in
+   render() and multiplies every shadowBlur value used in the
+   draw functions, so visuals quietly simplify under load instead
+   of the game just slowing down. 1 = full glow, 0 = none.
+============================================================ */
+let glowScale = 1;
+function updateGlowScale(){
+  const load = asteroids.length + enemies.length + projectiles.length + enemyBullets.length;
+  if(load > 260) glowScale = 0;
+  else if(load > 160) glowScale = 0.4;
+  else glowScale = 1;
+}
 
 function update(dt){
   if(gameState !== STATE.PLAYING) return;
@@ -2150,7 +2792,14 @@ function update(dt){
 
   // --- player rotation toward mouse ---
   const targetAngle = Math.atan2(mouseY - CY, mouseX - CX);
-  player.angle = targetAngle; // instant facing, as specified (always faces cursor)
+  if(aimJitterRemaining > 0){
+    aimJitterRemaining -= dt;
+    // briefly disorients aim — random wobble that settles down as the timer runs out
+    const jitterStrength = Math.min(1, aimJitterRemaining / 2000);
+    player.angle = targetAngle + rand(-0.6, 0.6) * jitterStrength;
+  } else {
+    player.angle = targetAngle; // instant facing, as specified (always faces cursor)
+  }
 
   // --- movement input ---
   let ix = 0, iy = 0;
@@ -2167,16 +2816,41 @@ function update(dt){
   } else {
     player.thrusterPulse *= 0.85;
   }
+
+  // --- black hole gravity: a real, CONSTANT pull on the player's velocity
+  // the moment they enter the pull radius — it doesn't ramp up as you get
+  // closer, it's a steady force whose strength depends only on the hole's
+  // size. Whether you can escape comes down entirely to your built-up
+  // speed: a small hole is easy to thrust away from, but a large one needs
+  // real Mobility investment to overpower. ---
+  for(const e of enemies){
+    if(e.type !== 'blackhole') continue;
+    const bdx = e.x - worldShiftX, bdy = e.y - worldShiftY;
+    const bdist = Math.hypot(bdx, bdy);
+    if(bdist < e.pullRadius && bdist > 0.001){
+      // constant force toward the hole — same at the edge as near the center
+      player.vx += (bdx / bdist) * e.pullStrength;
+      player.vy += (bdy / bdist) * e.pullStrength;
+    }
+    if(bdist < e.eventHorizonRadius){
+      triggerBlackHoleEvent(e);
+      break; // only one black hole event can fire per frame
+    }
+  }
+
   // friction
   player.vx *= player.friction;
   player.vy *= player.friction;
-  // clamp speed
+  // clamp speed (Reverse Polarity gives a temporary, non-destructive top-speed boost)
+  const effectiveMaxSpeed = player.maxSpeed * (reversePolarityRemaining > 0 ? 1.3 : 1);
   const sp = Math.hypot(player.vx, player.vy);
-  if(sp > player.maxSpeed){
-    player.vx = (player.vx/sp)*player.maxSpeed;
-    player.vy = (player.vy/sp)*player.maxSpeed;
+  if(sp > effectiveMaxSpeed){
+    player.vx = (player.vx/sp)*effectiveMaxSpeed;
+    player.vy = (player.vy/sp)*effectiveMaxSpeed;
   }
   player.speed = Math.hypot(player.vx, player.vy);
+
+  if(reversePolarityRemaining > 0) reversePolarityRemaining -= dt;
 
   // shift the world opposite to player velocity (illusion of ship moving)
   worldShiftX += player.vx;
@@ -2257,6 +2931,7 @@ function update(dt){
         enemyFire(e, toPlayerAngle);
       }
     } else if(e.type === 'turret'){
+      // move in/out to hold preferred range — same as before
       if(d > e.preferredRange + 30){
         e.x += Math.cos(toPlayerAngle)*e.speed;
         e.y += Math.sin(toPlayerAngle)*e.speed;
@@ -2265,9 +2940,69 @@ function update(dt){
         e.y -= Math.sin(toPlayerAngle)*e.speed;
       }
       e.angle = toPlayerAngle;
-      if(now - e.lastFire > e.fireRate && d < e.preferredRange + 200){
-        e.lastFire = now;
-        enemyFire(e, toPlayerAngle);
+
+      // burst-fire state machine:
+      // onCooldown=false, burstShotsLeft=0 → waiting to start next burst
+      // onCooldown=false, burstShotsLeft>0  → mid-burst, fires on burstTimer
+      // onCooldown=true                      → cooling down between bursts
+      if(d < e.preferredRange + 220){
+        e.burstTimer -= dt;
+        if(!e.onCooldown && e.burstShotsLeft === 0){
+          // start a new burst
+          e.burstShotsLeft = e.burstSize;
+          e.burstTimer = 0;
+        }
+        if(!e.onCooldown && e.burstShotsLeft > 0 && e.burstTimer <= 0){
+          // fire one shot per barrel this tick
+          const spread = e.barrels > 1 ? 0.18 : 0;
+          const mid = (e.barrels - 1) / 2;
+          for(let b = 0; b < e.barrels; b++){
+            enemyFire(e, toPlayerAngle + (b - mid) * spread);
+          }
+          e.burstShotsLeft--;
+          e.burstTimer = e.burstInterval;
+          if(e.burstShotsLeft === 0){
+            // burst finished — start cooldown
+            e.onCooldown = true;
+            e.burstTimer = e.burstCooldown;
+          }
+        }
+        if(e.onCooldown && e.burstTimer <= 0){
+          e.onCooldown = false;
+        }
+      }
+    } else if(e.type === 'bastion'){
+      // same hold-range and burst-fire as the turret tiers, but longer bursts,
+      // fires 3 shots per tick, and has notably more HP — a mini-boss presence
+      if(d > e.preferredRange + 30){
+        e.x += Math.cos(toPlayerAngle)*e.speed;
+        e.y += Math.sin(toPlayerAngle)*e.speed;
+      } else if(d < e.preferredRange - 30){
+        e.x -= Math.cos(toPlayerAngle)*e.speed;
+        e.y -= Math.sin(toPlayerAngle)*e.speed;
+      }
+      e.angle = toPlayerAngle;
+
+      if(d < e.preferredRange + 250){
+        e.burstTimer -= dt;
+        if(!e.onCooldown && e.burstShotsLeft === 0){
+          e.burstShotsLeft = e.burstSize;
+          e.burstTimer = 0;
+        }
+        if(!e.onCooldown && e.burstShotsLeft > 0 && e.burstTimer <= 0){
+          for(let b = -1; b <= 1; b++){
+            enemyFire(e, toPlayerAngle + b * 0.18);
+          }
+          e.burstShotsLeft--;
+          e.burstTimer = e.burstInterval;
+          if(e.burstShotsLeft === 0){
+            e.onCooldown = true;
+            e.burstTimer = e.burstCooldown;
+          }
+        }
+        if(e.onCooldown && e.burstTimer <= 0){
+          e.onCooldown = false;
+        }
       }
     } else if(e.type === 'boss'){
       if(d > 380){
@@ -2312,6 +3047,11 @@ function update(dt){
           e.lastFire = now;
         }
       }
+    } else if(e.type === 'bonus'){
+      // straight-line flyby, completely ignores the player — no targeting, no firing
+      e.x += Math.cos(e.travelAngle)*e.speed;
+      e.y += Math.sin(e.travelAngle)*e.speed;
+      e.angle = e.travelAngle;
     } else if(e.type === 'mine'){
       if(e.mineState === 'idle'){
         // dormant — only wakes up once the player drifts inside its detection radius
@@ -2342,7 +3082,7 @@ function update(dt){
     // collide with player
     const screenX = e.x - worldShiftX + CX;
     const screenY = e.y - worldShiftY + CY;
-    if(circleHit(screenX,screenY,e.radius, CX,CY,player.radius)){
+    if(e.type !== 'blackhole' && e.type !== 'bonus' && circleHit(screenX,screenY,e.radius, CX,CY,player.radius)){
       if(e.type === 'mine'){
         detonateMine(e.x, e.y);
         enemies.splice(i,1);
@@ -2444,11 +3184,16 @@ function update(dt){
     const p = projectiles[pi];
     let consumed = false;
 
-    const nearbyAsteroidSet = new Set(gridQuery(asteroidGrid, p.x, p.y, p.radius + 65));
-    if(nearbyAsteroidSet.size > 0){
-      for(let ai=asteroids.length-1; ai>=0; ai--){
-        const a = asteroids[ai];
-        if(!nearbyAsteroidSet.has(a)) continue;
+    // iterate the grid's nearby candidates directly instead of wrapping them in
+    // a Set and re-scanning the full asteroids array — avoids an allocation
+    // per projectile per frame and a full-array pass that the Set wasn't
+    // actually saving us from.
+    const nearbyAsteroids = gridQuery(asteroidGrid, p.x, p.y, p.radius + 65);
+    if(nearbyAsteroids.length > 0){
+      for(let ni=nearbyAsteroids.length-1; ni>=0; ni--){
+        const a = nearbyAsteroids[ni];
+        const ai = asteroids.indexOf(a);
+        if(ai === -1) continue; // already removed earlier this frame (e.g. split/killed)
         if(circleHit(p.x,p.y,p.radius, a.x,a.y,a.radius)){
           a.hp -= p.damage;
           a.hitFlash = 120;
@@ -2474,11 +3219,12 @@ function update(dt){
     }
 
     if(!consumed){
-      const nearbyEnemySet = new Set(gridQuery(enemyGrid, p.x, p.y, p.radius + 65));
-      if(nearbyEnemySet.size > 0){
-        for(let ei=enemies.length-1; ei>=0; ei--){
-          const e = enemies[ei];
-          if(!nearbyEnemySet.has(e)) continue;
+      const nearbyEnemies = gridQuery(enemyGrid, p.x, p.y, p.radius + 65);
+      if(nearbyEnemies.length > 0){
+        for(let ni=nearbyEnemies.length-1; ni>=0; ni--){
+          const e = nearbyEnemies[ni];
+          const ei = enemies.indexOf(e);
+          if(ei === -1) continue; // already removed earlier this frame
           if(circleHit(p.x,p.y,p.radius, e.x,e.y,e.radius)){
             const isHeavyTarget = e.type === 'tank' || e.type === 'boss' || e.type === 'marksman';
             const effectiveDamage = isHeavyTarget ? p.damage * (1 + weapon.hullBreakerBonus) : p.damage;
@@ -2528,6 +3274,7 @@ function update(dt){
 
   // --- ability ordnance (missile, and any future ability projectiles) ---
   updateMissiles(dt);
+  updateLaser(dt);
 
   updateHUD();
 }
@@ -2554,11 +3301,92 @@ function handleExplosiveImpact(wx, wy, radius){
   spawnExplosion(screenX, screenY, 'amber', 10, true);
 }
 
+/* ============================================================
+   BONUS SHIP REWARDS — what you get for shooting down a bonus
+   ship. Weighted random pick, same pattern as the upgrade/ability
+   pools: to add a new reward later, just add another entry here
+   with a weight, an available() guard, and an apply() that does
+   the effect and returns the floating popup text — nothing else
+   in the game needs to change.
+============================================================ */
+const BONUS_REWARDS = [
+  {
+    id: 'score',
+    weight: 30,
+    available(){ return true; },
+    apply(){
+      const amount = randInt(150, 300);
+      addScore(amount);
+      return { text: `+${amount} SCORE`, color: 'amber' };
+    }
+  },
+  {
+    id: 'xp',
+    weight: 25,
+    available(){ return true; },
+    apply(){
+      const amount = randInt(6, 12);
+      gainXP(amount);
+      return { text: `+${amount} XP`, color: 'cyan' };
+    }
+  },
+  {
+    id: 'card',
+    weight: 15,
+    available(){ return true; },
+    apply(){
+      showUpgradeScreen(); // an extra free card draw, on top of normal leveling
+      return { text: 'BONUS CARD!', color: 'purple' };
+    }
+  },
+  {
+    id: 'heal',
+    weight: 15,
+    available(){ return player.lives < player.maxLives; }, // skip if already full, so the roll isn't wasted
+    apply(){
+      const amount = Math.min(player.maxLives - player.lives, randInt(1, 2));
+      player.lives += amount;
+      return { text: `+${amount} LIFE`, color: 'green' };
+    }
+  },
+  {
+    id: 'shield',
+    weight: 15,
+    available(){ return true; },
+    apply(){
+      player.shieldMax += 1;
+      player.shieldCharge = player.shieldMax;
+      return { text: 'SHIELD +1', color: 'cyan' };
+    }
+  }
+];
+
+function dropBonusReward(screenX, screenY){
+  const pool = BONUS_REWARDS.filter(r => r.available());
+  const totalWeight = pool.reduce((s,r) => s + r.weight, 0);
+  let roll = Math.random() * totalWeight;
+  let reward = pool[pool.length-1];
+  for(const r of pool){
+    roll -= r.weight;
+    if(roll <= 0){ reward = r; break; }
+  }
+  const result = reward.apply();
+  pickupTexts.push({
+    x: screenX, y: screenY,
+    text: result.text, color: result.color,
+    life: 1400, maxLife: 1400
+  });
+}
+
 function killEnemy(e, idx, screenX, screenY){
   addScore(e.scoreValue);
+  gainXP(xpValueFor(e));
   spawnExplosion(screenX, screenY, e.color, (e.type==='boss'||e.type==='marksman')?40:16, true);
-  const statKey = (e.type === 'drifter' || e.type === 'tank') ? `${e.type}${e.tier||1}` : e.type;
+  const statKey = (e.type === 'drifter' || e.type === 'tank' || e.type === 'hunter' || e.type === 'turret') ? `${e.type}${e.tier||1}` : e.type;
   trackKill(statKey);
+  if(e.type === 'bonus'){
+    dropBonusReward(screenX, screenY);
+  }
   const deathWorldX = e.x, deathWorldY = e.y;
   enemies.splice(idx,1);
   if(e.type === 'boss'){
@@ -2602,6 +3430,18 @@ function updateHUD(){
   const ability = getEquippedAbility();
   if(!ability){
     abilityReadout.classList.add('hidden');
+  } else if(ability.id === 'laser' && laserState === 'charging'){
+    abilityReadout.classList.remove('hidden');
+    const fillPct = Math.min(100, (laserTimer / LASER_CONFIG.chargeTime) * 100);
+    document.getElementById('ability-fill').style.width = fillPct + '%';
+    document.getElementById('ability-fill').classList.remove('on-cooldown');
+    document.getElementById('ability-label').textContent = 'CHARGING…';
+  } else if(ability.id === 'laser' && laserState === 'firing'){
+    abilityReadout.classList.remove('hidden');
+    const fillPct = Math.max(0, 100 - (laserTimer / LASER_CONFIG.fireTime) * 100);
+    document.getElementById('ability-fill').style.width = fillPct + '%';
+    document.getElementById('ability-fill').classList.remove('on-cooldown');
+    document.getElementById('ability-label').textContent = 'FIRING';
   } else {
     abilityReadout.classList.remove('hidden');
     const ready = abilityCooldownRemaining <= 0;
@@ -2609,20 +3449,6 @@ function updateHUD(){
     document.getElementById('ability-fill').style.width = fillPct + '%';
     document.getElementById('ability-fill').classList.toggle('on-cooldown', !ready);
     document.getElementById('ability-label').textContent = ready ? `SPACE — ${ability.name}` : `SPACE — ${(abilityCooldownRemaining/1000).toFixed(1)}s`;
-  }
-
-  const specReminder = document.getElementById('specialization-reminder');
-  if(lockedFamilies.length >= MAX_LOCKED_FAMILIES){
-    // both specialization slots are filled — nothing left to remind the player about
-    specReminder.classList.add('hidden');
-  } else {
-    specReminder.classList.remove('hidden');
-    const lockedLabels = lockedFamilies.map(f => FAMILY_DEFS[f] ? FAMILY_DEFS[f].label : f.toUpperCase());
-    if(lockedFamilies.length === 0){
-      specReminder.textContent = 'CHOOSE 2 SPECIALIZATIONS';
-    } else {
-      specReminder.textContent = `${lockedLabels.join(' LOCKED')} LOCKED — CHOOSE 1 MORE`;
-    }
   }
 }
 
@@ -2650,6 +3476,7 @@ function drawBackground(){
 }
 
 function drawShip(){
+  if(shipDestroyed) return;
   ctx.save();
   ctx.translate(CX, CY);
   ctx.rotate(player.angle);
@@ -2677,7 +3504,7 @@ function drawShip(){
     ctx.strokeStyle = 'rgba(95,227,255,0.55)';
     ctx.lineWidth = 2;
     ctx.shadowColor = '#5fe3ff';
-    ctx.shadowBlur = 14;
+    ctx.shadowBlur = 14 * glowScale;
     ctx.beginPath();
     ctx.arc(0,0,22,0,Math.PI*2);
     ctx.stroke();
@@ -2688,7 +3515,7 @@ function drawShip(){
   ctx.strokeStyle = '#5fe3ff';
   ctx.lineWidth = 2;
   ctx.shadowColor = '#5fe3ff';
-  ctx.shadowBlur = 12;
+  ctx.shadowBlur = 12 * glowScale;
   ctx.beginPath();
   ctx.moveTo(18,0);
   ctx.lineTo(-12,-11);
@@ -2713,7 +3540,7 @@ function drawAsteroids(){
     ctx.strokeStyle = a.hitFlash > 0 ? '#ffffff' : '#c9d6e3';
     ctx.lineWidth = 1.6;
     ctx.shadowColor = '#c9d6e3';
-    ctx.shadowBlur = a.hitFlash > 0 ? 14 : 5;
+    ctx.shadowBlur = (a.hitFlash > 0 ? 14 : 5) * glowScale;
     ctx.beginPath();
     a.shape.forEach((pt, idx)=>{
       const r = a.radius * pt.r;
@@ -2732,7 +3559,12 @@ const enemyColorMap = {
   drifter2: '#ff8c3d', drifter3: '#fff23d',
   tank1: '#7d9fc9', tank2: '#5f7ea8', tank3: '#3f5d87',
   green: '#7dff8c',
-  mine: '#8a8f9a'
+  mine: '#8a8f9a',
+  blackhole: '#b88aff',
+  bonus: '#ffe066',
+  hunter1: '#ff2d2d', hunter2: '#ff5c1a', hunter3: '#ffae1a',
+  turret1: '#b88aff', turret2: '#d966ff', turret3: '#ff66cc',
+  bastion: '#cc44ff'
 };
 
 function drawEnemies(){
@@ -2749,7 +3581,7 @@ function drawEnemies(){
     ctx.strokeStyle = col;
     ctx.lineWidth = (e.type==='boss' || e.type==='marksman') ? 2.6 : (e.type==='tank' ? 2.4 : 1.8);
     ctx.shadowColor = col;
-    ctx.shadowBlur = e.hitFlash>0 ? 16 : 8;
+    ctx.shadowBlur = (e.hitFlash>0 ? 16 : 8) * glowScale;
 
     if(e.type === 'drifter'){
       ctx.beginPath();
@@ -2793,8 +3625,17 @@ function drawEnemies(){
       ctx.lineTo(-e.radius*0.6,e.radius);
       ctx.closePath();
       ctx.stroke();
+      // small targeting reticle at the core instead of a plain circle —
+      // reads as "actively locked onto you", distinct from the Turret's
+      // stationary hexagon-and-barrel silhouette
       ctx.beginPath();
       ctx.arc(0,0,e.radius*0.35,0,Math.PI*2);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(-e.radius*0.55,0); ctx.lineTo(-e.radius*0.2,0);
+      ctx.moveTo(e.radius*0.2,0); ctx.lineTo(e.radius*0.55,0);
+      ctx.moveTo(0,-e.radius*0.55); ctx.lineTo(0,-e.radius*0.2);
+      ctx.moveTo(0,e.radius*0.2); ctx.lineTo(0,e.radius*0.55);
       ctx.stroke();
     } else if(e.type === 'turret'){
       ctx.beginPath();
@@ -2805,10 +3646,64 @@ function drawEnemies(){
         if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
       }
       ctx.stroke();
+      // draw one barrel per tier, spread symmetrically around the facing direction
+      const barrelSpread = e.barrels > 1 ? 0.18 : 0;
+      const barrelMid = (e.barrels - 1) / 2;
+      const firingGlow = !e.onCooldown && e.burstShotsLeft > 0;
+      if(firingGlow){ ctx.shadowBlur = (e.hitFlash>0?16:8)*glowScale + 8; }
+      for(let b = 0; b < e.barrels; b++){
+        const ba = (b - barrelMid) * barrelSpread;
+        const bx = Math.cos(ba), by = Math.sin(ba);
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.lineTo(bx*e.radius*1.4, by*e.radius*1.4);
+        ctx.stroke();
+      }
+      if(firingGlow){ ctx.shadowBlur = (e.hitFlash>0?16:8)*glowScale; }
+    } else if(e.type === 'bastion'){
+      ctx.lineWidth = 3;
+      // outer hex ring — bigger than the regular turret
       ctx.beginPath();
-      ctx.moveTo(0,0);
-      ctx.lineTo(e.radius*1.4,0);
+      for(let i=0;i<=6;i++){
+        const a2 = (i/6)*Math.PI*2;
+        const x = Math.cos(a2)*e.radius, y = Math.sin(a2)*e.radius;
+        if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+      }
       ctx.stroke();
+      // inner hex detail
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      for(let i=0;i<=6;i++){
+        const a2 = (i/6)*Math.PI*2;
+        const x = Math.cos(a2)*e.radius*0.55, y = Math.sin(a2)*e.radius*0.55;
+        if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+      }
+      ctx.stroke();
+      // three barrels spread around facing direction
+      ctx.lineWidth = 2.8;
+      const firingGlowB = !e.onCooldown && e.burstShotsLeft > 0;
+      if(firingGlowB){ ctx.shadowBlur = (e.hitFlash>0?16:8)*glowScale + 10; }
+      for(let b=-1; b<=1; b++){
+        const ba = b * 0.18;
+        ctx.beginPath();
+        ctx.moveTo(0,0);
+        ctx.lineTo(Math.cos(ba)*e.radius*1.55, Math.sin(ba)*e.radius*1.55);
+        ctx.stroke();
+      }
+      if(firingGlowB){ ctx.shadowBlur = (e.hitFlash>0?16:8)*glowScale; }
+
+      // health bar
+      ctx.restore();
+      ctx.save();
+      const bwB = 100;
+      ctx.translate(screenX - bwB/2, screenY - e.radius - 20);
+      ctx.strokeStyle = 'rgba(204,68,255,0.5)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(0,0,bwB,5);
+      ctx.fillStyle = '#cc44ff';
+      ctx.fillRect(0,0, bwB*(e.hp/e.maxHp), 5);
+      ctx.restore();
+      continue;
     } else if(e.type === 'boss'){
       ctx.beginPath();
       const spikes = 5;
@@ -2872,7 +3767,8 @@ function drawEnemies(){
       const bodyColor = armed ? '#ff3d6e' : enemyColorMap.mine;
       ctx.strokeStyle = e.hitFlash > 0 ? '#ffffff' : bodyColor;
       ctx.shadowColor = bodyColor;
-      ctx.shadowBlur = armed ? 14 : 5;
+      ctx.shadowBlur = (armed ? 14 : 5) * glowScale;
+      ctx.lineWidth = 3.2;
 
       // round mine body with small radial spikes
       ctx.beginPath();
@@ -2900,10 +3796,101 @@ function drawEnemies(){
           const a2 = (dn/dotCount)*Math.PI*2 + performance.now()/600;
           const dx = Math.cos(a2)*e.radius*0.85, dy = Math.sin(a2)*e.radius*0.85;
           ctx.beginPath();
-          ctx.arc(dx, dy, 1.8, 0, Math.PI*2);
+          ctx.arc(dx, dy, 2.6, 0, Math.PI*2);
           ctx.fill();
         }
       }
+
+      ctx.restore();
+      continue;
+    } else if(e.type === 'bonus'){
+      // pulsing glow makes it read as "special" at a glance, distinct from any hostile
+      const pulse = 0.5 + 0.5*Math.sin(performance.now()/180);
+      ctx.strokeStyle = e.hitFlash > 0 ? '#ffffff' : enemyColorMap.bonus;
+      ctx.fillStyle = enemyColorMap.bonus;
+      ctx.shadowColor = enemyColorMap.bonus;
+      ctx.shadowBlur = (14 + pulse*10) * glowScale;
+      ctx.lineWidth = 2.2;
+
+      // saucer body: wide flattened ellipse
+      ctx.beginPath();
+      ctx.ellipse(0, 0, e.radius*1.3, e.radius*0.55, 0, 0, Math.PI*2);
+      ctx.stroke();
+
+      // dome on top
+      ctx.beginPath();
+      ctx.arc(0, -e.radius*0.15, e.radius*0.55, Math.PI, 0);
+      ctx.stroke();
+
+      // a few running lights along the rim, slowly chasing around it
+      const lightCount = 5;
+      for(let l=0; l<lightCount; l++){
+        const a2 = (l/lightCount)*Math.PI*2 + performance.now()/500;
+        const lx = Math.cos(a2)*e.radius*1.3, ly = Math.sin(a2)*e.radius*0.55;
+        ctx.globalAlpha = 0.5 + 0.5*Math.sin(a2*2 + performance.now()/300);
+        ctx.beginPath();
+        ctx.arc(lx, ly, 2, 0, Math.PI*2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+
+      ctx.restore();
+      continue;
+    } else if(e.type === 'blackhole'){
+
+      // outer pull-radius ring, very faint — shows how far the gravity reaches
+      ctx.strokeStyle = 'rgba(184,138,255,0.12)';
+      ctx.lineWidth = 1;
+      ctx.shadowBlur = 0;
+      ctx.beginPath();
+      ctx.arc(0,0,e.pullRadius,0,Math.PI*2);
+      ctx.stroke();
+
+      // swirling spiral arms — static, no rotation animation
+      ctx.shadowColor = '#b88aff';
+      const armCount = 3;
+      const segs = 28;
+      for(let arm=0; arm<armCount; arm++){
+        const armOffset = (arm/armCount)*Math.PI*2;
+
+        // build the full point list once, reuse for both passes
+        const pts = [];
+        for(let step=0; step<=segs; step++){
+          const frac = step/segs;
+          const a2 = armOffset + Math.pow(frac, 0.7) * Math.PI*3.2;
+          const r = e.radius*0.45 + frac*e.radius*3.4;
+          pts.push({ x: Math.cos(a2)*r, y: Math.sin(a2)*r });
+        }
+
+        // pass 1: full tail — thin and faint
+        ctx.beginPath();
+        pts.forEach((p,i) => i===0 ? ctx.moveTo(p.x,p.y) : ctx.lineTo(p.x,p.y));
+        ctx.strokeStyle = 'rgba(184,138,255,0.28)';
+        ctx.lineWidth = 1.4;
+        ctx.shadowBlur = 4 * glowScale;
+        ctx.stroke();
+
+        // pass 2: inner core section only — thick and bright
+        const coreSegs = Math.floor(segs * 0.35);
+        ctx.beginPath();
+        pts.slice(0, coreSegs+1).forEach((p,i) => i===0 ? ctx.moveTo(p.x,p.y) : ctx.lineTo(p.x,p.y));
+        ctx.strokeStyle = 'rgba(184,138,255,0.9)';
+        ctx.lineWidth = 4.2;
+        ctx.shadowBlur = 14 * glowScale;
+        ctx.stroke();
+      }
+
+      // dark void core (event horizon) — solid black with a bright violet rim
+      ctx.fillStyle = '#020208';
+      ctx.beginPath();
+      ctx.arc(0,0,e.eventHorizonRadius,0,Math.PI*2);
+      ctx.fill();
+      ctx.strokeStyle = '#b88aff';
+      ctx.shadowBlur = 16 * glowScale;
+      ctx.lineWidth = 3.6;
+      ctx.beginPath();
+      ctx.arc(0,0,e.eventHorizonRadius,0,Math.PI*2);
+      ctx.stroke();
 
       ctx.restore();
       continue;
@@ -2938,7 +3925,7 @@ function drawMarksmanLasers(){
       ctx.strokeStyle = `rgba(125,255,140,${0.35 + pulse*0.25})`;
       ctx.lineWidth = 1.4;
       ctx.shadowColor = '#7dff8c';
-      ctx.shadowBlur = 6;
+      ctx.shadowBlur = 6 * glowScale;
       ctx.setLineDash([10, 8]);
       ctx.beginPath();
       ctx.moveTo(x1,y1);
@@ -2950,7 +3937,7 @@ function drawMarksmanLasers(){
       ctx.strokeStyle = 'rgba(125,255,140,0.95)';
       ctx.lineWidth = 9;
       ctx.shadowColor = '#7dff8c';
-      ctx.shadowBlur = 24;
+      ctx.shadowBlur = 24 * glowScale;
       ctx.beginPath();
       ctx.moveTo(x1,y1);
       ctx.lineTo(x2,y2);
@@ -2976,7 +3963,7 @@ function drawProjectiles(){
     ctx.strokeStyle = p.isCrit ? '#fff8dc' : (p.explosive ? '#ffb347' : (p.piercing ? '#b88aff' : '#5fe3ff'));
     ctx.lineWidth = p.isCrit ? p.radius + 1.5 : p.radius;
     ctx.shadowColor = ctx.strokeStyle;
-    ctx.shadowBlur = p.isCrit ? 14 : 8;
+    ctx.shadowBlur = (p.isCrit ? 14 : 8) * glowScale;
     ctx.beginPath();
     ctx.moveTo(screenX - p.vx*1.4, screenY - p.vy*1.4);
     ctx.lineTo(screenX, screenY);
@@ -2987,7 +3974,7 @@ function drawProjectiles(){
     const screenY = b.y - worldShiftY + CY;
     ctx.fillStyle = '#ff3d6e';
     ctx.shadowColor = '#ff3d6e';
-    ctx.shadowBlur = 8;
+    ctx.shadowBlur = 8 * glowScale;
     ctx.beginPath();
     ctx.arc(screenX, screenY, b.radius, 0, Math.PI*2);
     ctx.fill();
@@ -3014,7 +4001,22 @@ function drawParticles(){
   ctx.globalAlpha = 1;
 }
 
+function drawPickupTexts(){
+  ctx.save();
+  ctx.font = 'bold 14px sans-serif';
+  ctx.textAlign = 'center';
+  for(const t of pickupTexts){
+    const alpha = Math.max(0, t.life/t.maxLife);
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = particleColorMap[t.color] || '#fff';
+    ctx.fillText(t.text, t.x, t.y);
+  }
+  ctx.restore();
+  ctx.globalAlpha = 1;
+}
+
 function render(){
+  updateGlowScale();
   drawBackground();
   clearCanvas();
   drawAsteroids();
@@ -3022,8 +4024,10 @@ function render(){
   drawMarksmanLasers();
   drawProjectiles();
   drawMissiles();
+  drawPlayerLaser();
   drawDrones();
   drawParticles();
+  drawPickupTexts();
   drawShip();
 }
 
@@ -3036,6 +4040,8 @@ function loop(now){
 
   if(gameState === STATE.PLAYING){
     update(dt);
+  } else if(gameState === STATE.DYING){
+    updateDeathSequence(dt);
   }
   render();
   requestAnimationFrame(loop);
@@ -3046,7 +4052,9 @@ function loop(now){
 ============================================================ */
 function resetGame(){
   score = 0;
-  nextUpgradeAt = 1500;
+  playerXP = 0;
+  playerLevel = 1;
+  xpForNextLevel = 10;
   waveLevel = 1;
   elapsedTime = 0;
   bossSpawnedAtWave = 0;
@@ -3057,6 +4065,8 @@ function resetGame(){
   spawnFocusTimer = 0;
   hazardFocusType = null;
   hazardFocusTimer = 0;
+  aimJitterRemaining = 0;
+  reversePolarityRemaining = 0;
   worldShiftX = 0; worldShiftY = 0;
   player.angle = 0; player.vx = 0; player.vy = 0;
   player.lives = 3; player.maxLives = 5;
@@ -3076,12 +4086,17 @@ function resetGame(){
   missiles = [];
   equippedAbilityId = null;
   abilityCooldownRemaining = 0;
+  laserState = 'idle';
+  laserTimer = 0;
   for(const key in ownedAbilities) delete ownedAbilities[key];
   lockedFamilies = [];
   weapon.chainReactor = false; weapon.chainChance = 0; weapon.chainRadius = 0;
   weapon.pierceDamageRetain = 0.7;
   pickupTexts = [];
   spawnTimer = 0;
+  shipDestroyed = false;
+  deathPhaseTimer = 0;
+  deathBurstsFired = 0;
   runStats.killsByType = {};
   runStats.totalKills = 0;
   runStats.shotsFired = 0;
@@ -3090,7 +4105,7 @@ function resetGame(){
   runStats.upgradesChosen = 0;
   initStars();
   document.getElementById('score-value').textContent = '0';
-  document.getElementById('next-upgrade-value').textContent = '1500';
+  updateXPReadout();
   document.getElementById('weapon-mods').textContent = '';
   updateHUD();
 
@@ -3106,7 +4121,7 @@ document.getElementById('start-btn').addEventListener('click', ()=>{
 });
 
 document.getElementById('restart-btn').addEventListener('click', ()=>{
-  document.getElementById('death-screen').classList.add('hidden');
+  hideDeathScreen();
   resetGame();
   gameState = STATE.PLAYING;
   document.getElementById('pause-hint').classList.remove('hidden');
@@ -3119,7 +4134,7 @@ document.getElementById('resume-btn').addEventListener('click', ()=>{
 function returnToMainMenu(){
   gameState = STATE.MENU;
   document.getElementById('pause-screen').classList.add('hidden');
-  document.getElementById('death-screen').classList.add('hidden');
+  hideDeathScreen();
   document.getElementById('pause-hint').classList.add('hidden');
   resetGame();
   document.getElementById('start-screen').classList.remove('hidden');
@@ -3132,92 +4147,54 @@ document.getElementById('death-menu-btn').addEventListener('click', returnToMain
    ENEMY GUIDE & EVENT GUIDE DATA
 ============================================================ */
 const ENEMY_GUIDE = [
-  {
-    id: 'ast_large', name: 'LARGE ASTEROID', score: '60 PTS',
-    desc: 'A slow, drifting mass of rock. Splits into two medium asteroids when destroyed.',
-    tag: 'HAZARD', iconKind: 'asteroid', iconSize: 1.0
-  },
-  {
-    id: 'ast_medium', name: 'MEDIUM ASTEROID', score: '35 PTS',
-    desc: 'A fragment from a larger rock. Splits into two small asteroids when destroyed.',
-    tag: 'HAZARD', iconKind: 'asteroid', iconSize: 0.72
-  },
-  {
-    id: 'ast_small', name: 'SMALL ASTEROID', score: '20 PTS',
-    desc: 'The last fragment of a broken asteroid. Breaks apart completely when destroyed.',
-    tag: 'HAZARD', iconKind: 'asteroid', iconSize: 0.5
-  },
-  {
-    id: 'drifter1', name: 'DRIFTER', score: '80 PTS',
-    desc: 'A slow hostile that drifts straight toward you and rams on contact. No weapons of its own.',
-    tag: 'HOSTILE', iconKind: 'drifter', iconColor: '#ff3d6e'
-  },
-  {
-    id: 'drifter2', name: 'DRIFTER MK.II', score: '95 PTS',
-    desc: 'A faster variant of the standard drifter. Same ramming behavior, quicker approach.',
-    tag: 'HOSTILE', iconKind: 'drifter', iconColor: '#ff8c3d'
-  },
-  {
-    id: 'drifter3', name: 'DRIFTER MK.III', score: '110 PTS',
-    desc: 'The fastest drifter variant. Closes distance quickly — don’t let it sneak up on you.',
-    tag: 'HOSTILE', iconKind: 'drifter', iconColor: '#fff23d'
-  },
-  {
-    id: 'hunter', name: 'HUNTER', score: '140 PTS',
-    desc: 'Actively chases you down and fires aimed shots once it’s within range. More dangerous than it looks.',
-    tag: 'HOSTILE', iconKind: 'hunter', iconColor: '#ff3d6e'
-  },
-  {
-    id: 'turret', name: 'TURRET', score: '160 PTS',
-    desc: 'Holds its distance and fires aimed shots from range. Closes in only if you stray too far.',
-    tag: 'HOSTILE', iconKind: 'turret', iconColor: '#b88aff'
-  },
-  {
-    id: 'tank1', name: 'TANK', score: '220 PTS',
-    desc: 'A heavily armored hull that lumbers straight at you. Slower than a drifter, but absorbs far more damage — easy to dodge, costly to ignore. A collision costs 1 life.',
-    tag: 'HOSTILE', iconKind: 'tank', iconColor: '#7d9fc9'
-  },
-  {
-    id: 'tank2', name: 'TANK MK.II', score: '260 PTS',
-    desc: 'A bigger tank with a noticeably tougher hull and a bit more speed than the original — still slow, but don\u2019t take it for granted. A collision costs 2 lives.',
-    tag: 'HOSTILE', iconKind: 'tank', iconColor: '#5f7ea8'
-  },
-  {
-    id: 'tank3', name: 'TANK MK.III', score: '300 PTS',
-    desc: 'The heaviest tank variant, and the fastest of the three — its hull strength makes it the toughest non-boss target in the field. A collision costs 3 lives, so don\u2019t get careless.',
-    tag: 'HOSTILE', iconKind: 'tank', iconColor: '#3f5d87'
-  },
-  {
-    id: 'mine', name: 'MINE', score: '130 PTS',
-    desc: 'Dormant until you drift within range, then it arms (watch for red pulsing dots) and chases at a steady pace for 7 seconds before detonating. Shoot it down before the fuse runs out, or just give it a wide berth.',
-    tag: 'HAZARD', iconKind: 'mine', iconColor: '#ff3d6e'
-  },
-  {
-    id: 'boss', name: 'THE CAPTAIN', score: '1200 PTS',
-    desc: 'A heavy combatant that holds back and unleashes a rotating triple-shot burst. High hull strength.',
-    tag: 'BOSS', iconKind: 'boss', iconColor: '#ffb347'
-  },
-  {
-    id: 'marksman', name: 'THE MARKSMAN', score: '1400 PTS',
-    desc: 'Holds long range and locks onto your position with a thin warning line before firing a full-screen beam along that exact path. Move out of the line before it fires.',
-    tag: 'BOSS', iconKind: 'marksman', iconColor: '#7dff8c'
-  },
+  // HAZARDS
+  { id: 'ast_large', name: 'LARGE ASTEROID', score: '60 PTS', desc: 'A slow drifting mass of rock. Splits into two medium asteroids when destroyed.', tag: 'HAZARD', iconKind: 'asteroid', iconSize: 1.0 },
+  { id: 'ast_medium', name: 'MEDIUM ASTEROID', score: '35 PTS', desc: 'A fragment from a larger rock. Splits into two small asteroids when destroyed.', tag: 'HAZARD', iconKind: 'asteroid', iconSize: 0.72 },
+  { id: 'ast_small', name: 'SMALL ASTEROID', score: '20 PTS', desc: 'The last fragment of a broken asteroid. Breaks apart completely when destroyed.', tag: 'HAZARD', iconKind: 'asteroid', iconSize: 0.5 },
+  { id: 'mine', name: 'MINE', score: '130 PTS', desc: 'Dormant until you drift within range, then arms and chases at a steady pace for 7 seconds before detonating. Shoot it down before the fuse runs out.', tag: 'HAZARD', iconKind: 'mine', iconColor: '#ff3d6e' },
+  { id: 'blackhole_small', name: 'BLACK HOLE — SMALL', score: '—', desc: 'A rare gravity well. The small one is weak — a light touch on the thrusters pulls you free. Indestructible. Cross the center and a random fate triggers.', tag: 'HAZARD', iconKind: 'blackhole', iconColor: '#b88aff' },
+  { id: 'blackhole_medium', name: 'BLACK HOLE — MEDIUM', score: '—', desc: 'A stronger gravity well. You can still pull away on raw thrust but without some speed built up it will fight you.', tag: 'HAZARD', iconKind: 'blackhole', iconColor: '#b88aff' },
+  { id: 'blackhole_large', name: 'BLACK HOLE — LARGE', score: '—', desc: 'The strongest pull of the three. Without real Mobility investment your thrusters alone will not break its grip.', tag: 'HAZARD', iconKind: 'blackhole', iconColor: '#b88aff' },
+  { id: 'bonus', name: 'BONUS SHIP', score: '???', desc: 'A rare harmless flyby. Shoot it down for a random reward: score, XP, a free card draw, a life, or a shield charge.', tag: 'HAZARD', iconKind: 'bonus', iconColor: '#ffe066' },
+  // ENEMIES
+  { id: 'drifter1', name: 'DRIFTER', score: '80 PTS', desc: 'A slow hostile that drifts straight toward you and rams on contact. No weapons of its own.', tag: 'ENEMY', iconKind: 'drifter', iconColor: '#ff3d6e' },
+  { id: 'drifter2', name: 'DRIFTER MK.II', score: '95 PTS', desc: 'A faster variant of the standard drifter. Same ramming behavior, quicker approach.', tag: 'ENEMY', iconKind: 'drifter', iconColor: '#ff8c3d' },
+  { id: 'drifter3', name: 'DRIFTER MK.III', score: '110 PTS', desc: 'The fastest drifter variant. Closes distance quickly.', tag: 'ENEMY', iconKind: 'drifter', iconColor: '#fff23d' },
+  { id: 'hunter1', name: 'HUNTER', score: '140 PTS', desc: 'Actively chases you down and fires aimed shots once within range. More dangerous than it looks.', tag: 'ENEMY', iconKind: 'hunter', iconColor: '#ff2d2d' },
+  { id: 'hunter2', name: 'HUNTER MK.II', score: '170 PTS', desc: 'Tougher, faster, reloads quicker. Closes distance fast and gives you little breathing room.', tag: 'ENEMY', iconKind: 'hunter', iconColor: '#ff5c1a' },
+  { id: 'hunter3', name: 'HUNTER MK.III', score: '200 PTS', desc: 'The fastest and most relentless hunter. Treat it as a priority the moment it locks on.', tag: 'ENEMY', iconKind: 'hunter', iconColor: '#ffae1a' },
+  { id: 'turret1', name: 'TURRET', score: '160 PTS', desc: 'Closes to range then fires a quick burst before going quiet. Time your push for the cooldown window.', tag: 'ENEMY', iconKind: 'turret', iconColor: '#b88aff' },
+  { id: 'turret2', name: 'TURRET MK.II', score: '210 PTS', desc: 'Same burst pattern but fires two shots at once. The spread makes it harder to sidestep mid-burst.', tag: 'ENEMY', iconKind: 'turret2', iconColor: '#d966ff' },
+  { id: 'turret3', name: 'TURRET MK.III', score: '260 PTS', desc: 'Three barrels, three simultaneous shots per tick. Near-unavoidable at close range — wait for the cooldown.', tag: 'ENEMY', iconKind: 'turret3', iconColor: '#ff66cc' },
+  { id: 'tank1', name: 'TANK', score: '220 PTS', desc: 'A heavily armored hull that lumbers straight at you. Easy to dodge, costly to ignore. A collision costs 1 life.', tag: 'ENEMY', iconKind: 'tank', iconColor: '#7d9fc9' },
+  { id: 'tank2', name: 'TANK MK.II', score: '260 PTS', desc: 'Tougher hull and more speed. A collision costs 2 lives.', tag: 'ENEMY', iconKind: 'tank', iconColor: '#5f7ea8' },
+  { id: 'tank3', name: 'TANK MK.III', score: '300 PTS', desc: 'Heaviest and fastest tank. A collision costs 3 lives — do not get careless.', tag: 'ENEMY', iconKind: 'tank', iconColor: '#3f5d87' },
+  // MINI BOSSES
+  { id: 'bastion', name: 'THE BASTION', score: '700 PTS', desc: 'A heavily fortified gun platform that holds its range and unleashes long relentless 3-barrel bursts. More hull than any regular enemy — demands sustained firepower to break down.', tag: 'MINI BOSS', iconKind: 'turret3', iconColor: '#cc44ff' },
+  // BOSSES
+  { id: 'boss', name: 'THE CAPTAIN', score: '1200 PTS', desc: 'A heavy combatant that holds back and unleashes a rotating triple-shot burst. High hull strength.', tag: 'MINI BOSS', iconKind: 'boss', iconColor: '#ffb347' },
+  { id: 'marksman', name: 'THE MARKSMAN', score: '1400 PTS', desc: 'Holds long range and locks onto your position with a thin warning line before firing a full-screen beam. Move out of the line before it fires.', tag: 'MINI BOSS', iconKind: 'marksman', iconColor: '#7dff8c' },
 ];
 
 const EVENT_GUIDE = [
   {
     id: 'captain_event', name: 'CAPTAIN INBOUND', score: 'EVERY 5000 PTS',
-    desc: 'One of three random outcomes at this milestone. The Captain holds its distance and fires rotating bursts — stay mobile and keep landing hits until its hull gives out.',
+    desc: 'One of four random outcomes at this milestone. The Captain holds its distance and fires rotating bursts — stay mobile and keep landing hits until its hull gives out.',
     tag: 'EVENT'
   },
   {
     id: 'swarm_event', name: 'WAVE OF DRIFTERS', score: 'EVERY 5000 PTS',
-    desc: 'One of three random outcomes at this milestone. For 10 seconds, drifters of all three speeds flood in on top of the normal field. Asteroids and other enemies keep spawning as usual — it just gets a lot more crowded.',
+    desc: 'One of four random outcomes at this milestone. For 10 seconds, drifters of all three speeds flood in on top of the normal field — it just gets a lot more crowded.',
     tag: 'EVENT'
   },
   {
     id: 'marksman_event', name: 'MARKSMAN INBOUND', score: 'EVERY 5000 PTS',
-    desc: 'One of three random outcomes at this milestone. The Marksman appears and locks a full-screen laser onto your position — watch for the thin warning line and move before the real beam fires.',
+    desc: 'One of four random outcomes at this milestone. The Marksman locks a full-screen laser onto your position — watch for the thin warning line and move before the real beam fires.',
+    tag: 'EVENT'
+  },
+  {
+    id: 'bastion_event', name: 'THE BASTION INBOUND', score: 'EVERY 5000 PTS',
+    desc: 'One of four random outcomes at this milestone. The Bastion holds its range and opens up with long relentless 3-barrel bursts. It has far more hull than anything in the regular field — whittle it down during the cooldown windows.',
     tag: 'EVENT'
   },
 ];
@@ -3240,6 +4217,10 @@ function drawSimpleEnemyIcon(svgHost, entry){
     inner = `<polygon points="48,32 12,12 6,32 12,52" fill="none" stroke="${entry.iconColor}" stroke-width="2.2" stroke-linejoin="round"/><circle cx="24" cy="32" r="6" fill="none" stroke="${entry.iconColor}" stroke-width="2"/>`;
   } else if(entry.iconKind === 'turret'){
     inner = `<polygon points="32,8 50,18 50,46 32,56 14,46 14,18" fill="none" stroke="${entry.iconColor}" stroke-width="2.2" stroke-linejoin="round"/><line x1="32" y1="32" x2="54" y2="32" stroke="${entry.iconColor}" stroke-width="2.2"/>`;
+  } else if(entry.iconKind === 'turret2'){
+    inner = `<polygon points="32,8 50,18 50,46 32,56 14,46 14,18" fill="none" stroke="${entry.iconColor}" stroke-width="2.2" stroke-linejoin="round"/><line x1="32" y1="29" x2="54" y2="24" stroke="${entry.iconColor}" stroke-width="2.2"/><line x1="32" y1="35" x2="54" y2="40" stroke="${entry.iconColor}" stroke-width="2.2"/>`;
+  } else if(entry.iconKind === 'turret3'){
+    inner = `<polygon points="32,8 50,18 50,46 32,56 14,46 14,18" fill="none" stroke="${entry.iconColor}" stroke-width="2.2" stroke-linejoin="round"/><line x1="32" y1="26" x2="54" y2="18" stroke="${entry.iconColor}" stroke-width="2.2"/><line x1="32" y1="32" x2="54" y2="32" stroke="${entry.iconColor}" stroke-width="2.2"/><line x1="32" y1="38" x2="54" y2="46" stroke="${entry.iconColor}" stroke-width="2.2"/>`;
   } else if(entry.iconKind === 'boss'){
     inner = `<polygon points="32,6 42,24 60,28 46,40 50,58 32,48 14,58 18,40 4,28 22,24" fill="none" stroke="${entry.iconColor}" stroke-width="2.2" stroke-linejoin="round"/><circle cx="32" cy="32" r="8" fill="none" stroke="${entry.iconColor}" stroke-width="2"/>`;
   } else if(entry.iconKind === 'tank'){
@@ -3254,14 +4235,36 @@ function drawSimpleEnemyIcon(svgHost, entry){
         const ox = 32+Math.cos(a)*22, oy = 32+Math.sin(a)*22;
         return `<line x1="${ix}" y1="${iy}" x2="${ox}" y2="${oy}" stroke="${entry.iconColor}" stroke-width="2.2"/>`;
       }).join('');
+  } else if(entry.iconKind === 'bonus'){
+    inner = `<ellipse cx="32" cy="34" rx="22" ry="9" fill="none" stroke="${entry.iconColor}" stroke-width="2.2"/>` +
+      `<path d="M14 34 A18 18 0 0 1 50 34" fill="none" stroke="${entry.iconColor}" stroke-width="2.2"/>` +
+      `<circle cx="14" cy="34" r="2" fill="${entry.iconColor}"/><circle cx="32" cy="42" r="2" fill="${entry.iconColor}"/><circle cx="50" cy="34" r="2" fill="${entry.iconColor}"/>`;
+  } else if(entry.iconKind === 'blackhole'){
+    // swirling spiral arms around a dark void core
+    let arms = '';
+    for(let arm=0; arm<3; arm++){
+      const armOffset = (arm/3)*Math.PI*2;
+      let pathD = '';
+      for(let step=0; step<=14; step++){
+        const frac = step/14;
+        const a = armOffset + frac*Math.PI*2.2;
+        const r = 8 + frac*16;
+        const x = 32+Math.cos(a)*r, y = 32+Math.sin(a)*r;
+        pathD += (step===0 ? 'M' : 'L') + x.toFixed(1) + ' ' + y.toFixed(1) + ' ';
+      }
+      arms += `<path d="${pathD}" fill="none" stroke="${entry.iconColor}" stroke-width="1.4" opacity="0.6"/>`;
+    }
+    inner = arms +
+      `<circle cx="32" cy="32" r="9" fill="#020208" stroke="${entry.iconColor}" stroke-width="2.2"/>`;
   }
   svgHost.innerHTML = `<svg viewBox="0 0 64 64" width="100%" height="100%">${inner}</svg>`;
 }
 
 function buildEnemyGuide(){
-  const grid = document.getElementById('enemy-guide-grid');
-  grid.innerHTML = '';
-  ENEMY_GUIDE.forEach(entry=>{
+  const sectionsContainer = document.getElementById('enemy-guide-sections');
+  sectionsContainer.innerHTML = '';
+
+  function buildCard(entry){
     const card = document.createElement('div');
     card.className = 'guide-card';
     card.innerHTML = `
@@ -3276,8 +4279,25 @@ function buildEnemyGuide(){
       <div class="gc-tag">${entry.tag}</div>
     `;
     drawSimpleEnemyIcon(card.querySelector('.gc-icon'), entry);
-    grid.appendChild(card);
-  });
+    return card;
+  }
+
+  function addSection(headingText, entries, colorClass){
+    if(entries.length === 0) return;
+    const heading = document.createElement('div');
+    heading.className = 'guide-section-heading' + (colorClass ? ' guide-heading-' + colorClass : '');
+    heading.textContent = headingText;
+    sectionsContainer.appendChild(heading);
+
+    const grid = document.createElement('div');
+    grid.className = 'guide-grid';
+    entries.forEach(entry => grid.appendChild(buildCard(entry)));
+    sectionsContainer.appendChild(grid);
+  }
+
+  addSection('HAZARDS',     ENEMY_GUIDE.filter(e => e.tag === 'HAZARD'),    'grey');
+  addSection('ENEMIES',     ENEMY_GUIDE.filter(e => e.tag === 'ENEMY'),     'cyan');
+  addSection('MINI BOSSES', ENEMY_GUIDE.filter(e => e.tag === 'MINI BOSS'), 'purple');
 
   const eventGrid = document.getElementById('event-guide-grid');
   eventGrid.innerHTML = '';
@@ -3445,5 +4465,6 @@ document.getElementById('build-guide-back').addEventListener('click', ()=>{
 
 initStars();
 requestAnimationFrame((t)=>{ lastTime = t; requestAnimationFrame(loop); });
+
 
 })();

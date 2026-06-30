@@ -25,9 +25,8 @@
     <div class="hud-corner" id="hud-topright">
       <div class="label">SCORE</div>
       <div class="value" id="score-value">0</div>
-      <div class="label" style="margin-top:6px;">NEXT UPGRADE</div>
-      <div class="value" style="font-size:14px;" id="next-upgrade-value">1500</div>
-      <div id="specialization-reminder" class="hidden"></div>
+      <div class="label" style="margin-top:6px;">LEVEL <span id="xp-level-value">1</span></div>
+      <div id="xp-bar-wrap"><div id="xp-fill"></div></div>
     </div>
 
     <div id="weapon-readout">
@@ -76,7 +75,7 @@
     <div class="guide-heading">ENEMY GUIDE</div>
     <div class="guide-sub">KNOW WHAT'S COMING FOR YOU</div>
     <div class="guide-scroll">
-      <div class="guide-grid" id="enemy-guide-grid"></div>
+      <div id="enemy-guide-sections"></div>
       <div class="guide-section-heading">RANDOM EVENTS</div>
       <div class="guide-grid" id="event-guide-grid"></div>
     </div>
@@ -149,10 +148,11 @@
   <div class="overlay hidden" id="upgrade-screen">
     <div class="upgrade-heading">SIGNAL DETECTED</div>
     <div class="upgrade-sub">CHOOSE ONE ENHANCEMENT</div>
+    <div id="specialization-reminder" class="hidden"></div>
     <div class="card-row" id="card-row"></div>
   </div>
 </div>
 
-<script src="Game.js"></script>
+<script src="game.js"></script>
 </body>
 </html>
